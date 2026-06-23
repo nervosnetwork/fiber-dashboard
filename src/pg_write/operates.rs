@@ -243,7 +243,7 @@ pub async fn daily_statistics(
         COALESCE(c.name, 'ckb') as name, r.capacity as capacity
     FROM {} n
     left join {} c on n.udt_type_script = c.id
-    left join {} r on n.channel_outpoint = r.channel_outpoint
+    join {} r on n.channel_outpoint = r.channel_outpoint
     WHERE bucket < $1::timestamp and bucket >= $2::timestamp
     ORDER BY time_bucket('1 day', bucket), n.channel_outpoint, bucket DESC
     ",
