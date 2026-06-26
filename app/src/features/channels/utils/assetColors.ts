@@ -5,8 +5,8 @@
 
 export const ASSET_COLORS: Record<string, string> = {
   'ckb': '#674BDC',      // purple
-  'usdi': '#6ED4CA',     // teal
-  'btc': '#EFA171',     
+  // 'usdi': '#6ED4CA',  // teal（USDI 已下线，颜色先注释保留）
+  'btc': '#EFA171',
   'other': '#64748b',
 };
 

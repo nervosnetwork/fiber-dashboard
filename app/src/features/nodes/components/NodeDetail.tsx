@@ -98,7 +98,7 @@ export const NodeDetail = () => {
       const order = sortState === 'ascending' ? 'asc' : 'desc';
       console.log('[NodeDetail] Sort params - sortKey:', sortKey, 'sortState:', sortState);
       console.log('[NodeDetail] Backend params - sortBy:', sortBy, 'order:', order);
-      return apiClient.getChannelsByNodeId(nodeId, currentPage - 1, sortBy, order, PAGE_SIZE, ['ckb', 'usdi']);
+      return apiClient.getChannelsByNodeId(nodeId, currentPage - 1, sortBy, order, PAGE_SIZE, ['ckb']);
     },
     enabled: !!nodeId,
     staleTime: 0, // 关闭缓存，确保每次排序都重新请求
@@ -261,18 +261,18 @@ export const NodeDetail = () => {
       });
     }
     
-    // 添加 USDI 数据（从 udtInfos 中筛选）
-    if (udtInfos && udtInfos.length > 0) {
-      const usdiInfo = udtInfos.find((udt) => udt.name.toLowerCase() === 'usdi');
-      if (usdiInfo && usdiInfo.auto_accept_amount) {
-        const amount = hexToDecimal(usdiInfo.auto_accept_amount);
-        const numericAmount = Number(amount) / 100_000_000;
-        assets.push({
-          assetName: 'USDI',
-          autoAcceptValue: `${formatAssetValue(numericAmount)} USDI`,
-        });
-      }
-    }
+    // USDI 已下线，先注释保留，便于后续新增代币时恢复
+    // if (udtInfos && udtInfos.length > 0) {
+    //   const usdiInfo = udtInfos.find((udt) => udt.name.toLowerCase() === 'usdi');
+    //   if (usdiInfo && usdiInfo.auto_accept_amount) {
+    //     const amount = hexToDecimal(usdiInfo.auto_accept_amount);
+    //     const numericAmount = Number(amount) / 100_000_000;
+    //     assets.push({
+    //       assetName: 'USDI',
+    //       autoAcceptValue: `${formatAssetValue(numericAmount)} USDI`,
+    //     });
+    //   }
+    // }
     
     return assets;
   }, [nodeInfo, udtInfos]);
@@ -287,21 +287,6 @@ export const NodeDetail = () => {
       label: "Channel Outpoint",
       width: "w-140 lg:flex-1 lg:min-w-94",
       render: (value) => <ChannelOutpointCell value={String(value)} />,
-    },
-    {
-      key: "asset",
-      label: "Asset",
-      width: "w-32",
-      sortable: false,
-      render: (value, row) => (
-        <div className="flex items-center gap-2">
-          <div 
-            className="w-3 h-3 flex-shrink-0" 
-            style={{ backgroundColor: row.assetColor as string }}
-          />
-          <span className="text-primary text-sm font-medium">{value as string}</span>
-        </div>
-      ),
     },
     {
       key: "assetLiquidity",
