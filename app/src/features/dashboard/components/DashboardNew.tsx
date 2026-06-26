@@ -3,15 +3,15 @@ import {
   KpiCard,
   SectionHeader,
   GlassCardContainer,
-  RadioGroup,
+  // RadioGroup, // 多资产切换已下线，先注释保留，便于后续新增代币时恢复
 } from "@/shared/components/ui";
 import { NodeTreeMap } from "@/shared/components/chart/NodeTreeMap";
-import { SUPPORTED_ASSETS } from "@/lib/config/assets";
-import { useState, useEffect, useMemo } from "react";
+// import { SUPPORTED_ASSETS } from "@/lib/config/assets"; // 多资产切换已下线，先注释保留
+import { useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNetwork } from "@/features/networks/context/NetworkContext";
 import { queryKeys } from "@/features/dashboard/hooks/useDashboard";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 
 // 固定使用 hourly 时间范围
 const TIME_RANGE = "hourly" as const;
@@ -62,36 +62,19 @@ const MOCK_TIME_SERIES_DATA2 = [
 export const DashboardNew = () => {
   const timeRange = TIME_RANGE; // 固定使用 hourly
   const router = useRouter();
-  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const { apiClient, currentNetwork } = useNetwork();
-  
-  // 从 URL 读取资产值，默认为 'ckb'
-  const urlAsset = searchParams.get('asset') || 'ckb';
-  const [selectedAsset, setSelectedAsset] = useState<string>(urlAsset);
-  
-  // 同步 URL 参数到 selectedAsset（仅在 URL 变化时）
-  useEffect(() => {
-    setSelectedAsset(urlAsset);
-  }, [urlAsset]);
-  
-  // 当 selectedAsset 变化时，更新 URL（避免循环）
-  useEffect(() => {
-    if (selectedAsset !== urlAsset) {
-      const params = new URLSearchParams(searchParams.toString());
-      if (selectedAsset) {
-        params.set('asset', selectedAsset);
-      } else {
-        params.delete('asset');
-      }
-      const newUrl = params.toString() ? `/?${params.toString()}` : '/';
-      router.replace(newUrl, { scroll: false });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAsset]); // 只依赖 selectedAsset，避免循环
 
-  // 获取资产标签
-  const assetLabel = SUPPORTED_ASSETS.find(a => a.value === selectedAsset)?.label.toUpperCase() || "CKB";
+  // 资产固定为 CKB（USDI 已下线）
+  // 后续新增代币时可恢复以下多资产切换逻辑：
+  // const searchParams = useSearchParams();
+  // const urlAsset = searchParams.get('asset') || 'ckb';
+  // const [selectedAsset, setSelectedAsset] = useState<string>(urlAsset);
+  // useEffect(() => { setSelectedAsset(urlAsset); }, [urlAsset]);
+  // useEffect(() => { ...URL 同步... }, [selectedAsset]);
+  // const assetLabel = SUPPORTED_ASSETS.find(a => a.value === selectedAsset)?.label.toUpperCase() || "CKB";
+  const selectedAsset = 'ckb';
+  const assetLabel = "CKB";
 
   // Fiber Network Snapshot 数据
   const { data: snapshotDataCurrent } = useQuery({
@@ -109,27 +92,21 @@ export const DashboardNew = () => {
     refetchInterval: 30000,
   });
 
-  // 计算 Total Channels (CKB + USDI)
+  // 计算 Total Channels (CKB)
   const totalChannelsData = useMemo(() => {
     if (!snapshotDataCurrent?.asset_analysis) return { current: 0, change: 0 };
-    
+
     const currentCkb = snapshotDataCurrent.asset_analysis.find(
       a => a.name.toLowerCase() === 'ckb'
     );
-    const currentUsdi = snapshotDataCurrent.asset_analysis.find(
-      a => a.name.toLowerCase() === 'usdi'
-    );
-    const current = (Number(currentCkb?.channel_len || 0) + Number(currentUsdi?.channel_len || 0));
+    const current = Number(currentCkb?.channel_len || 0);
 
     if (!snapshotDataLastWeek?.asset_analysis) return { current, change: 0 };
 
     const lastWeekCkb = snapshotDataLastWeek.asset_analysis.find(
       a => a.name.toLowerCase() === 'ckb'
     );
-    const lastWeekUsdi = snapshotDataLastWeek.asset_analysis.find(
-      a => a.name.toLowerCase() === 'usdi'
-    );
-    const lastWeek = (Number(lastWeekCkb?.channel_len || 0) + Number(lastWeekUsdi?.channel_len || 0));
+    const lastWeek = Number(lastWeekCkb?.channel_len || 0);
 
     const change = lastWeek > 0 ? ((current - lastWeek) / lastWeek) * 100 : 0;
 
@@ -222,15 +199,20 @@ export const DashboardNew = () => {
 
       {/* 第二部分: Channels */}
       <div className="flex flex-col gap-4">
-        {/* 移动端和桌面端不同的布局 */}
+        <div className="flex items-center justify-between gap-4">
+          <SectionHeader title="Channels" />
+          <button
+            onClick={() => router.push('/channels')}
+            className="type-button1 text-purple cursor-pointer"
+          >
+            View details
+          </button>
+        </div>
+        {/* 多资产切换已下线，先注释保留，便于后续新增代币时恢复
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-          {/* 移动端：标题 + View details */}
-          {/* 桌面端：标题 + RadioGroup */}
           <div className="flex items-center justify-between md:justify-start gap-4">
-            <SectionHeader
-              title="Channels"
-            />
-            <button 
+            <SectionHeader title="Channels" />
+            <button
               onClick={() => router.push(`/channels?asset=${selectedAsset}`)}
               className="type-button1 text-purple cursor-pointer md:hidden"
             >
@@ -247,8 +229,6 @@ export const DashboardNew = () => {
               />
             </div>
           </div>
-          
-          {/* 移动端：RadioGroup 独占一行 */}
           <div className="md:hidden w-full">
             <RadioGroup
               options={[
@@ -260,15 +240,14 @@ export const DashboardNew = () => {
               className="h-[45px] w-full flex"
             />
           </div>
-          
-          {/* 桌面端：View details 按钮在右边 */}
-          <button 
+          <button
             onClick={() => router.push(`/channels?asset=${selectedAsset}`)}
             className="hidden md:block type-button1 text-purple cursor-pointer"
           >
             View details
           </button>
         </div>
+        */}
         
         {/* 第一行: Liquidity 和 Channels 卡片 */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

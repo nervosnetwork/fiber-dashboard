@@ -21,12 +21,13 @@ export const SUPPORTED_ASSETS: AssetConfig[] = [
     color: "#674BDC",
     unit: "CKB",
   },
-  {
-    value: "usdi",
-    label: "USDI",
-    color: "#6ED4CA",
-    unit: "USDI",
-  },
+  // USDI 已下线，配置先注释保留，便于后续新增代币时恢复
+  // {
+  //   value: "usdi",
+  //   label: "USDI",
+  //   color: "#6ED4CA",
+  //   unit: "USDI",
+  // },
 ];
 
 /**

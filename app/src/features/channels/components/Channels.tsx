@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import {
   Table,
   Pagination,
@@ -10,7 +10,6 @@ import {
   GlassCardContainer,
   StatusSelect,
   StatusBadge,
-  RadioGroup,
   CopyButton,
 } from "@/shared/components/ui";
 import BarChart from "@/shared/components/chart/BarChart";
@@ -93,49 +92,25 @@ const ChannelOutpointCell = ({ value }: { value: string }) => {
 
 export const Channels = () => {
   const router = useRouter();
-  const searchParams = useSearchParams();
   
-  // 从 URL 读取初始资产值，默认为 'ckb'
-  const urlAsset = searchParams.get('asset') || 'ckb';
+  // 资产固定为 CKB（USDI 已下线；历史多资产切换逻辑已移除，后续新增代币时可恢复）
+  const overviewAsset = 'ckb';
   
   const [currentPage, setCurrentPage] = useState(1); // 1-based for display
   const [selectedStates, setSelectedStates] = useState<ChannelState[]>([]); // 默认为空，表示 all statuses
   const [selectedStatus, setSelectedStatus] = useState<string>(''); // 状态下拉选择框，''表示 all statuses
-  const [overviewAsset, setOverviewAsset] = useState<string>(urlAsset); // 从 URL 初始化 - 用于 Channel Overview 图表筛选
   const [sortKey, setSortKey] = useState<string>("");
   const [sortState, setSortState] = useState<SortState>("none");
   const PAGE_SIZE = 10; // 每页显示10条
   const { apiClient, currentNetwork } = useNetwork();
-  
-  // 同步 URL 参数到 overviewAsset（仅在 URL 变化时）
-  useEffect(() => {
-    setOverviewAsset(urlAsset);
-  }, [urlAsset]);
-  
-  // 当 overviewAsset 变化时，更新 URL（避免循环）
-  useEffect(() => {
-    if (overviewAsset !== urlAsset) {
-      const params = new URLSearchParams(searchParams.toString());
-      if (overviewAsset) {
-        params.set('asset', overviewAsset);
-      } else {
-        params.delete('asset');
-      }
-      const newUrl = params.toString() ? `/channels?${params.toString()}` : '/channels';
-      router.replace(newUrl, { scroll: false });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overviewAsset]); // 只依赖 overviewAsset，避免循环
   
   // 计算后端页码（从1开始转换为从0开始）
   const backendPage = currentPage - 1;
 
   // 将前端的 sortKey 映射到后端的 sort_by 字段
   const getBackendSortBy = (frontendKey: string): string => {
-    // assetLiquidity 根据当前资产类型选择不同排序字段：
-    // - ckb: 按 capacity 排序
-    // - usdi 或其他非 CKB 资产: 按 asset（udt_value）排序
-    const liquiditySortBy = (!overviewAsset || overviewAsset === 'ckb') ? 'capacity' : 'asset';
+    // assetLiquidity 固定按 capacity 排序（仅支持 CKB）
+    const liquiditySortBy = 'capacity';
     const mapping: Record<string, string> = {
       'createdOn': 'create_time',
       'lastCommitted': 'last_commit_time',
@@ -170,14 +145,6 @@ export const Channels = () => {
     refetchInterval: 300000, // 5分钟刷新
   });
 
-  // 使用后端接口获取资产分布数据
-  // 返回格式：{"ckb": 100, "usdi": 50, ...}
-  const { data: channelCountByAsset } = useQuery({
-    queryKey: ["channel-count-by-asset", currentNetwork],
-    queryFn: () => apiClient.getChannelCountByAsset(),
-    refetchInterval: 300000, // 5分钟刷新
-  });
-
   // 使用服务端分页接口获取指定状态的通道数据
   // 如果没有选中任何状态，则请求所有状态
   const statesToFetch = selectedStates.length === 0 ? ALL_CHANNEL_STATES : selectedStates;
@@ -194,36 +161,16 @@ export const Channels = () => {
   const totalCount = channelsData?.total_count ?? 0;
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
 
-  // 当资产选择变化时，重置到第一页
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [overviewAsset]);
-
-  // 根据选中的资产计算状态统计数据（使用 overviewAsset，用于 Channel Overview 图表和状态选择器）
+  // 计算 CKB 各状态通道数量（用于 Channel Overview 图表和状态选择器）
   const getStateCount = useCallback((state: ChannelState) => {
     if (!channelCountByState) return 0;
     
-    // 服务端返回格式：{"ckb": {"open": 100, ...}, "USDI": {...}}
-    // 注意：ckb 是小写，USDI 是大写
+    // 服务端返回格式：{"ckb": {"open": 100, ...}}
     type StateData = Record<string, Record<string, number>>;
     const stateData = channelCountByState as unknown as StateData;
-    
-    if (!overviewAsset) {
-      // All assets: 聚合 CKB 和 USDI 的数量
-      let total = 0;
-      const ckbData = stateData["ckb"] || {};
-      const usdiData = stateData["USDI"] || {}; // 使用大写 USDI
-      total += ckbData[state] || 0;
-      total += usdiData[state] || 0;
-      return total;
-    } else {
-      // 单个资产：返回对应资产的数量
-      // 需要转换为服务端的格式：ckb 小写，usdi -> USDI 大写
-      const assetKey = overviewAsset === 'usdi' ? 'USDI' : overviewAsset;
-      const assetData = stateData[assetKey] || {};
-      return assetData[state] || 0;
-    }
-  }, [channelCountByState, overviewAsset]);
+    const ckbData = stateData["ckb"] || {};
+    return ckbData[state] || 0;
+  }, [channelCountByState]);
 
   // 组装 PieChart 数据 - Channel Status Distribution
   const pieChartData = useMemo(() => {
@@ -234,32 +181,6 @@ export const Channels = () => {
       { name: "Uncooperative closed", value: getStateCount("closed_uncooperative"), status: "Uncooperative closed" },
     ];
   }, [getStateCount]);
-
-  // 组装 PieChart 数据 - Asset Distribution
-  // 只显示 CKB 和 USDI，根据 overviewAsset 过滤
-  const assetDistributionData = useMemo(() => {
-    if (!channelCountByAsset) return [];
-    
-    // 服务端返回格式：{"ckb": 100, "USDI": 50, ...}
-    // 注意：ckb 是小写，USDI 是大写
-    if (!overviewAsset) {
-      // All assets: 只显示 CKB 和 USDI
-      return Object.entries(channelCountByAsset)
-        .filter(([name]) => name.toLowerCase() === 'ckb' || name.toLowerCase() === 'usdi')
-        .map(([name, value]) => ({
-          name,
-          value,
-        }));
-    } else {
-      // 选中了单个资产: 不显示 Asset Distribution
-      return [];
-    }
-  }, [channelCountByAsset, overviewAsset]);
-
-  // 处理 Channel Overview 区域的资产选择变化
-  const handleOverviewAssetChange = (asset: string) => {
-    setOverviewAsset(asset);
-  };
 
   // 计算容量分布数据 - 使用后端返回的分桶结果
   // 根据 overviewAsset 过滤和聚合数据
@@ -273,95 +194,29 @@ export const Channels = () => {
       }));
     }
 
-    // 服务端返回格式: { "asset": {...}, "capacity": {"ckb": {"Capacity 10^0k": 10, ...}, "USDI": {...}} }
-    // 注意：ckb 是小写，USDI 是大写
+    // 服务端返回格式: { "capacity": {"ckb": {"Capacity 10^0k": 10, ...}} }
     type DistributionData = { 
       capacity: Record<string, Record<string, number>>;
-      asset: Record<string, Record<string, number>>;
     };
     const distributionData = capacityDistribution as unknown as DistributionData;
     const capacityData = distributionData.capacity || {};
+    const ckbCapacity = capacityData["ckb"] || {};
     
-    if (!overviewAsset) {
-      // All assets: 聚合 CKB 和 USDI 的容量分布
-      const result = CAPACITY_RANGES.map(range => {
-        const key = `Capacity ${range.label}`;
-        const ckbCount = (capacityData["ckb"] || {})[key] || 0;
-        const usdiCount = (capacityData["USDI"] || {})[key] || 0; // 使用大写 USDI
-        return {
-          label: range.label,
-          value: ckbCount + usdiCount,
-          min: range.min,
-          max: range.max,
-        };
-      });
-      return result;
-    } else {
-      // 单个资产: 返回该资产的容量分布
-      // 需要转换为服务端的格式：ckb 小写，usdi -> USDI 大写
-      const assetKey = overviewAsset === 'usdi' ? 'USDI' : overviewAsset;
-      const assetCapacity = capacityData[assetKey] || {};
-      const result = CAPACITY_RANGES.map(range => {
-        const key = `Capacity ${range.label}`;
-        const count = assetCapacity[key] || 0;
-        return {
-          label: range.label,
-          value: count,
-          min: range.min,
-          max: range.max,
-        };
-      });
-      return result;
-    }
-  }, [capacityDistribution, overviewAsset]);
-
-  // 计算 USDI Liquidity 分布数据 - 从 asset 字段获取
-  const usdiLiquidityDistributionData = useMemo(() => {
-    if (!capacityDistribution || overviewAsset !== 'usdi') {
-      return CAPACITY_RANGES.map(range => ({ 
-        label: range.label, 
-        value: 0, 
-        min: range.min, 
-        max: range.max 
-      }));
-    }
-
-    // 从 asset 字段获取 USDI 的数据
-    type DistributionData = { 
-      asset: Record<string, Record<string, number>>;
-    };
-    const distributionData = capacityDistribution as unknown as DistributionData;
-    const assetData = distributionData.asset || {};
-    const usdiAssetData = assetData["USDI"] || {};
-    
-    const result = CAPACITY_RANGES.map(range => {
-      const key = `Asset ${range.label}`;
-      const count = usdiAssetData[key] || 0;
+    return CAPACITY_RANGES.map(range => {
+      const key = `Capacity ${range.label}`;
       return {
         label: range.label,
-        value: count,
+        value: ckbCapacity[key] || 0,
         min: range.min,
         max: range.max,
       };
     });
-    
-    return result;
-  }, [capacityDistribution, overviewAsset]);
-
-  // 计算资产分布的总数，用于百分比计算
-  const totalChannelsForAsset = useMemo(() => {
-    return assetDistributionData.reduce((sum, item) => sum + item.value, 0);
-  }, [assetDistributionData]);
+  }, [capacityDistribution]);
 
   // 计算容量分布的总数，用于百分比计算
   const totalChannelsForCapacity = useMemo(() => {
     return capacityDistributionData.reduce((sum, item) => sum + item.value, 0);
   }, [capacityDistributionData]);
-
-  // 计算 USDI Liquidity 分布的总数，用于百分比计算
-  const totalChannelsForLiquidity = useMemo(() => {
-    return usdiLiquidityDistributionData.reduce((sum, item) => sum + item.value, 0);
-  }, [usdiLiquidityDistributionData]);
 
   // Convert API data to table format - 直接使用当前页的数据
   const tableData: ChannelData[] = channelsData?.list?.map((channel: BasicChannelInfo) => {
@@ -436,21 +291,6 @@ export const Channels = () => {
       label: "Channel Outpoint",
       width: "w-140 lg:flex-1 lg:min-w-94",
       render: (value) => <ChannelOutpointCell value={String(value)} />,
-    },
-    {
-      key: "asset",
-      label: "Asset",
-      width: "w-32",
-      sortable: false,
-      render: (value, row) => (
-        <div className="flex items-center gap-2">
-          <div 
-            className="w-3 h-3 flex-shrink-0" 
-            style={{ backgroundColor: row.assetColor as string }}
-          />
-          <span className="text-primary text-sm font-medium">{value as string}</span>
-        </div>
-      ),
     },
     {
       key: "assetLiquidity",
@@ -561,26 +401,15 @@ export const Channels = () => {
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Channel Overview 标题和资产选择器 */}
+      {/* Channel Overview 标题 */}
       <div className="flex items-center">
         <h2 className="type-h2 font-semibold text-primary">
           Channel Overview
         </h2>
-        {/* 资产选择器 - 只显示 CKB/USDI/All assets，距离标题右侧 16px */}
-        <div className="ml-4">
-          <RadioGroup
-            options={[
-              { value: "ckb", label: "CKB" },
-              { value: "usdi", label: "USDI" },
-            ]}
-            value={overviewAsset}
-            onChange={handleOverviewAssetChange}
-          />
-        </div>
       </div>
 
-      {/* 第一行：Channel Status Distribution 和 Asset Distribution（根据选择显示） */}
-      <div className={`grid gap-6 ${overviewAsset ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1 lg:grid-cols-2'}`}>
+      {/* 第一行：Channel Status Distribution 和 CKB Channel Liquidity Distribution */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <GlassCardContainer>
           <PieChart
             data={pieChartData}
@@ -603,109 +432,29 @@ export const Channels = () => {
           />
         </GlassCardContainer>
 
-        {/* Asset Distribution - 只在 All assets 模式显示 */}
-        {!overviewAsset && assetDistributionData.length > 0 && (
-          <GlassCardContainer>
-            <PieChart
-              data={assetDistributionData}
-              title="Asset Distribution"
-              height="400px"
-              colors={assetDistributionData.map(asset => getAssetColorUtil(asset.name))}
-              tooltipFormatter={(params) => {
-                const percentage = totalChannelsForAsset > 0
-                  ? ((params.value / totalChannelsForAsset) * 100).toFixed(1)
-                  : "0.0";
-                
-                return [
-                  { label: "Asset", value: params.name, showColorDot: true },
-                  { label: "# of Channels", value: params.value.toString() },
-                  { label: "% of Total", value: `${percentage}%` },
-                ];
-              }}
-            />
-          </GlassCardContainer>
-        )}
-        
-        {/* Capacity Distribution - 只在 CKB 资产模式时显示在第一行第二列 */}
-        {overviewAsset === 'ckb' && (
-          <GlassCardContainer>
-            <BarChart
-              data={capacityDistributionData}
-              title={`${overviewAsset.toUpperCase()} Channel Liquidity Distribution`}
-              height="400px"
-              tooltipFormatter={item => {
-                const dataItem = capacityDistributionData.find(d => d.label === item.label);
-                const percentage = totalChannelsForCapacity > 0 
-                  ? ((item.value / totalChannelsForCapacity) * 100).toFixed(1)
-                  : "0.0";
-                const range = dataItem 
-                  ? formatCapacityRange(dataItem.min, dataItem.max)
-                  : item.label;
-                
-                return [
-                  { label: "Liquidity Range", value: range },
-                  { label: "Total Channels", value: item.value.toString() },
-                  { label: "% of Total", value: `${percentage}%` },
-                ];
-              }}
-            />
-          </GlassCardContainer>
-        )}
-
-        {/* USDI Liquidity Distribution - 在 USDI 模式时显示在第一行第二列 */}
-        {overviewAsset === 'usdi' && (
-          <GlassCardContainer>
-            <BarChart
-              data={usdiLiquidityDistributionData}
-              title="USDI Liquidity Distribution"
-              height="400px"
-              tooltipFormatter={item => {
-                const dataItem = usdiLiquidityDistributionData.find(d => d.label === item.label);
-                const percentage = totalChannelsForLiquidity > 0 
-                  ? ((item.value / totalChannelsForLiquidity) * 100).toFixed(1)
-                  : "0.0";
-                const range = dataItem 
-                  ? formatCapacityRange(dataItem.min, dataItem.max)
-                  : item.label;
-                
-                return [
-                  { label: "Liquidity Range", value: range },
-                  { label: "Total Channels", value: item.value.toString() },
-                  { label: "% of Total", value: `${percentage}%` },
-                ];
-              }}
-            />
-          </GlassCardContainer>
-        )}
+        <GlassCardContainer>
+          <BarChart
+            data={capacityDistributionData}
+            title="CKB Channel Liquidity Distribution"
+            height="400px"
+            tooltipFormatter={item => {
+              const dataItem = capacityDistributionData.find(d => d.label === item.label);
+              const percentage = totalChannelsForCapacity > 0 
+                ? ((item.value / totalChannelsForCapacity) * 100).toFixed(1)
+                : "0.0";
+              const range = dataItem 
+                ? formatCapacityRange(dataItem.min, dataItem.max)
+                : item.label;
+              
+              return [
+                { label: "Liquidity Range", value: range },
+                { label: "Total Channels", value: item.value.toString() },
+                { label: "% of Total", value: `${percentage}%` },
+              ];
+            }}
+          />
+        </GlassCardContainer>
       </div>
-
-      {/* 第二行：Capacity Distribution 柱状图 - 只在 All assets 模式显示 */}
-      {!overviewAsset && (
-        <div className="mt-6">
-          <GlassCardContainer>
-            <BarChart
-              data={capacityDistributionData}
-              title="Channel Liquidity Distribution"
-              height="400px"
-              tooltipFormatter={item => {
-                const dataItem = capacityDistributionData.find(d => d.label === item.label);
-                const percentage = totalChannelsForCapacity > 0 
-                  ? ((item.value / totalChannelsForCapacity) * 100).toFixed(1)
-                  : "0.0";
-                const range = dataItem 
-                  ? formatCapacityRange(dataItem.min, dataItem.max)
-                  : item.label;
-                
-                return [
-                  { label: "Liquidity Range", value: range },
-                  { label: "Total Channels", value: item.value.toString() },
-                  { label: "% of Total", value: `${percentage}%` },
-                ];
-              }}
-            />
-          </GlassCardContainer>
-        </div>
-      )}
 
       <div className="flex items-center gap-4 flex-wrap">
         {/* Status Select - 使用下拉选择框 */}
