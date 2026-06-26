@@ -243,7 +243,7 @@ pub async fn daily_statistics(
         COALESCE(c.name, 'ckb') as name, r.capacity as capacity
     FROM {} n
     left join {} c on n.udt_type_script = c.id
-    left join {} r on n.channel_outpoint = r.channel_outpoint
+    join {} r on n.channel_outpoint = r.channel_outpoint
     WHERE bucket < $1::timestamp and bucket >= $2::timestamp
     ORDER BY time_bucket('1 day', bucket), n.channel_outpoint, bucket DESC
     ",
@@ -476,6 +476,8 @@ pub async fn channel_states_monitor(
             AND last_commit_time >= now() - interval '30 days')
             OR
             state NOT IN ('closed_cooperative', 'closed_uncooperative')"#;
+        let mainnet_known_sql = "SELECT channel_outpoint FROM channel_states";
+        let testnet_known_sql = "SELECT channel_outpoint FROM channel_states_testnet";
 
         let mainnet_states = sqlx::query(mainnet_sql)
             .fetch_all(pool)
@@ -637,8 +639,33 @@ pub async fn channel_states_monitor(
                 }
             })
             .collect::<Vec<_>>();
+        let mainnet_known = sqlx::query(mainnet_known_sql)
+            .fetch_all(pool)
+            .await
+            .expect("failed to fetch mainnet known channel outpoints")
+            .iter()
+            .map(|row| {
+                (
+                    Network::Mainnet,
+                    decode_channel_outpoint(&row.get::<String, _>("channel_outpoint")),
+                )
+            })
+            .collect::<Vec<_>>();
+        let testnet_known = sqlx::query(testnet_known_sql)
+            .fetch_all(pool)
+            .await
+            .expect("failed to fetch testnet known channel outpoints")
+            .iter()
+            .map(|row| {
+                (
+                    Network::Testnet,
+                    decode_channel_outpoint(&row.get::<String, _>("channel_outpoint")),
+                )
+            })
+            .collect::<Vec<_>>();
         ChannelStates {
             channels: mainnet_states.into_iter().chain(testnet_states).collect(),
+            known_channel_outpoints: mainnet_known.into_iter().chain(testnet_known).collect(),
         }
     };
 
@@ -657,18 +684,17 @@ pub async fn channel_states_monitor(
                 CHANNEL_MONITOR_HEARTBEAT.store(Utc::now().timestamp() as u64, std::sync::atomic::Ordering::Release);
             }
             Some((net, new)) = recv.recv() => {
-                let new = new.into_iter().filter_map(|op| {
-                    if channel_states.channels.contains_key(&op) {
-                        None
-                    } else {
-                        Some(op)
-                    }
-                }).collect::<Vec<_>>();
+                let new = unknown_channel_outpoints(
+                    &channel_states.known_channel_outpoints,
+                    net,
+                    new,
+                );
                 log::info!("{:?}, new channels received: {}", net, new.len());
                 if !new.is_empty() {
                     let groups = new_channels(net, new, &rpc).await;
                     for group in groups {
                         let (outpoint, state) = group.into_state();
+                        channel_states.known_channel_outpoints.insert((net, outpoint.clone()));
                         channel_states.channels.insert(outpoint, state);
                     }
                 }
@@ -1183,6 +1209,27 @@ struct ChannelState {
 
 struct ChannelStates {
     channels: HashMap<JsonBytes, ChannelState>,
+    known_channel_outpoints: HashSet<(Network, JsonBytes)>,
+}
+
+fn decode_channel_outpoint(raw_outpoint: &str) -> JsonBytes {
+    let mut buf = vec![0u8; raw_outpoint.len() / 2];
+    hex_decode(raw_outpoint.as_bytes(), &mut buf).unwrap();
+    JsonBytes::from_bytes(buf.into())
+}
+
+fn unknown_channel_outpoints(
+    known_channel_outpoints: &HashSet<(Network, JsonBytes)>,
+    net: Network,
+    outpoints: Vec<JsonBytes>,
+) -> Vec<JsonBytes> {
+    let mut seen = HashSet::new();
+    outpoints
+        .into_iter()
+        .filter(|op| {
+            !known_channel_outpoints.contains(&(net, op.clone())) && seen.insert(op.clone())
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1749,4 +1796,28 @@ pub fn multiaddr_to_socketaddr(addr: &Multiaddr) -> Option<SocketAddr> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_channel_outpoints_are_not_returned_as_new_channels() {
+        let known_outpoint = JsonBytes::from_vec(vec![1, 2, 3]);
+        let unknown_outpoint = JsonBytes::from_vec(vec![4, 5, 6]);
+        let known = HashSet::from([(Network::Testnet, known_outpoint.clone())]);
+
+        let new_channels = unknown_channel_outpoints(
+            &known,
+            Network::Testnet,
+            vec![
+                known_outpoint.clone(),
+                unknown_outpoint.clone(),
+                unknown_outpoint.clone(),
+            ],
+        );
+
+        assert_eq!(new_channels, vec![unknown_outpoint]);
+    }
 }
