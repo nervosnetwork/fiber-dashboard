@@ -32,6 +32,8 @@ use std::{
     vec,
 };
 
+const MAX_CONCURRENT_CHANNEL_TASKS: usize = 32;
+
 pub async fn from_rpc_to_db_schema(
     node_info: NodeInfo,
     net: Network,
@@ -728,7 +730,7 @@ async fn channel_tx_update(channel_states: &mut ChannelStates, rpc: &mut RpcClie
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     };
 
-    let mut handles = Vec::with_capacity(channel_states.channels.len() / 3);
+    let mut tasks = Vec::with_capacity(channel_states.channels.len() / 3);
     for (outpoint, state) in channel_states.channels.iter() {
         if matches!(
             state.state,
@@ -739,7 +741,7 @@ async fn channel_tx_update(channel_states: &mut ChannelStates, rpc: &mut RpcClie
         let outpoint = outpoint.clone();
         let state = state.clone();
         let mut rpc = rpc.clone();
-        let handle = tokio::spawn(async move {
+        let task = async move {
             let mut csus = UpdateType::Nothing;
             match state.state {
                 State::ClosedCooperative | State::ClosedUncooperative => {}
@@ -950,15 +952,16 @@ async fn channel_tx_update(channel_states: &mut ChannelStates, rpc: &mut RpcClie
                 }
             }
             csus
-        });
-        handles.push(handle);
+        };
+        tasks.push(task);
     }
 
     let mut testnet: HashMap<JsonBytes, ChannelStateUpdate> = HashMap::new();
     let mut mainnet: HashMap<JsonBytes, ChannelStateUpdate> = HashMap::new();
 
-    futures::stream::iter(handles)
-        .buffer_unordered(2048)
+    futures::stream::iter(tasks)
+        .map(tokio::spawn)
+        .buffer_unordered(MAX_CONCURRENT_CHANNEL_TASKS)
         .filter_map(|res| async move {
             match res {
                 Ok(ut) => match ut {
@@ -1507,12 +1510,12 @@ pub async fn new_channels(
         Network::Mainnet => &*MAINNET_COMMITMENT_CODE_HASH,
         Network::Testnet => &*TESTNET_COMMITMENT_CODE_HASH,
     };
-    let mut handles = Vec::with_capacity(channels.len());
+    let mut tasks = Vec::with_capacity(channels.len());
     for outpoint in channels {
         let rpc = rpc.clone();
         let url = url.clone();
         let code_hash = code_hash.clone();
-        let handle = tokio::spawn(async move {
+        let task = async move {
             let raw_outpoint = packed::OutPoint::from_slice(outpoint.as_bytes()).unwrap();
 
             let funding_tx = loop {
@@ -1747,12 +1750,13 @@ pub async fn new_channels(
                 }
             }
             group
-        });
-        handles.push(handle);
+        };
+        tasks.push(task);
     }
 
-    let groups: Vec<ChannelGroup> = futures::stream::iter(handles)
-        .buffer_unordered(2048)
+    let groups: Vec<ChannelGroup> = futures::stream::iter(tasks)
+        .map(tokio::spawn)
+        .buffer_unordered(MAX_CONCURRENT_CHANNEL_TASKS)
         .map(|x| x.unwrap())
         .collect()
         .await;
