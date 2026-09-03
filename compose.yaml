@@ -20,9 +20,8 @@ services:
     restart: always
 
   fiber-dashbord:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${FIBER_DASHBOARD_IMAGE:-ghcr.io/nervosnetwork/fiber-dashboard-backend:latest}
+    pull_policy: always
     container_name: fiber-dashbord-backend
     environment:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@timescaledb:5432/fiber_dashbord

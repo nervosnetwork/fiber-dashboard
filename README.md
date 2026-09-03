@@ -1,5 +1,40 @@
 ## Fiber Dashbord
 
+## Run with Docker Compose
+
+Copy the example environment file first:
+
+```bash
+cp .env.example .env
+```
+
+For normal or production usage, pull the published backend image and start the stack:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+You can also let Compose pull during startup:
+
+```bash
+docker compose up -d --pull always
+```
+
+To deploy an immutable branch build instead of `latest`, override `FIBER_DASHBOARD_IMAGE` with a tag like `<normalized-branch>-<7charsha>`:
+
+```bash
+FIBER_DASHBOARD_IMAGE=ghcr.io/nervosnetwork/fiber-dashboard-backend:feature-api-cache-abcdef1 docker compose up -d
+```
+
+For local backend image builds, use the override file:
+
+```bash
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
+```
+
+Running containers will not restart automatically just because the remote `latest` tag changed. Run a Compose update command again when you want to pull and recreate with a newer image.
+
 http api default on 8080, method list:
 
 ```
