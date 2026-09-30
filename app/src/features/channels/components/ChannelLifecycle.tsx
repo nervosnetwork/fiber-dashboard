@@ -561,6 +561,12 @@ export function ChannelLifecycle({
                                   ? "0 (First settlement)"
                                   : "1 (Subsequent commitment update)",
                             },
+                            {
+                              label: "Commitment contract",
+                              value: parsedArgs.has_full_payment_hash
+                                ? "v1 (full payment hash)"
+                                : "Legacy (20-byte hash prefix)",
+                            },
                           ]
                         : []),
                       ...(parsedWitness &&
@@ -584,6 +590,13 @@ export function ChannelLifecycle({
                             {
                               label: "Settlement remote amount",
                               value: String(parsedWitness.settlement.settlement_remote_amount),
+                            },
+                            {
+                              label: "Payment hash",
+                              value:
+                                parsedWitness.settlement.payment_hash_len === 32
+                                  ? "32 bytes (v1 full hash)"
+                                  : "20 bytes (Legacy prefix)",
                             },
                           ]
                         : []),

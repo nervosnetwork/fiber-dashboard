@@ -79,7 +79,16 @@ export const parseEpoch = (epoch: bigint) => {
 };
 
 /**
+ * commitment lock 合约的 feature 位（args 的最后一个字节）。
+ * 见 fiber-scripts#30：bit0 表示链上提交完整 32 字节 payment hash。
+ */
+export const COMMITMENT_FEATURE_ONCHAIN_FULL_PAYMENT_HASH = 0b0000_0001;
+
+/**
  * 解析 Lock Args V2
+ *
+ * Legacy 布局为 57 字节；开启 ONCHAIN_FULL_PAYMENT_HASH 的 v1 布局在此基础上
+ * 追加 1 字节 feature 位，前 57 字节不变。
  */
 export const parseLockArgsV2 = (hex: string) => {
   const data = hex.startsWith('0x') ? hex.substring(2) : hex;
@@ -103,12 +112,124 @@ export const parseLockArgsV2 = (hex: string) => {
   const settlement_flag = settlementFlagHex ? parseInt(settlementFlagHex, 16) : 0;
   offset += 2;
 
+  // Legacy args 到此结束，取不到字节即视为 feature 为 0
+  const featuresHex = data.substring(offset, offset + 2);
+  const features = featuresHex ? parseInt(featuresHex, 16) : 0;
+
   return {
     pubkey_hash: `0x${pubkeyHash}`,
     delay_epoch: parseEpoch(delayEpoch),
     version: version.toString(),
     settlement_hash: settlementHash ? `0x${settlementHash}` : '',
-    settlement_flag: settlement_flag
+    settlement_flag: settlement_flag,
+    features: features,
+    has_full_payment_hash:
+      (features & COMMITMENT_FEATURE_ONCHAIN_FULL_PAYMENT_HASH) !== 0
+  };
+};
+
+/**
+ * settlement witness 中链上提交的 payment hash 长度（字节）。
+ *
+ * Legacy 合约只提交 hash 的 20 字节前缀，v1（ONCHAIN_FULL_PAYMENT_HASH）
+ * 提交完整 32 字节，HTLC 记录由 85 字节变为 97 字节，其后所有字段随之偏移。
+ */
+const PAYMENT_HASH_LEN_LEGACY = 20;
+const PAYMENT_HASH_LEN_V1 = 32;
+
+/**
+ * 按给定的 payment hash 长度解析 settlement witness 主体。
+ *
+ * 返回解析结果以及实际消耗到的偏移量，调用方据此判断布局是否匹配。
+ */
+const parseSettlementWitness = (
+  data: string,
+  start: number,
+  unlockCount: number,
+  paymentHashLen: number
+): { settlement: SettlementData; end: number } => {
+  let offset = start;
+
+  const pendingHtlcCount = parseInt(data.substring(offset, offset + 2), 16);
+  offset += 2;
+  const htlcs: HTLCData[] = [];
+
+  for (let i = 0; i < pendingHtlcCount; i++) {
+    const htlc_type = parseInt(data.substring(offset, offset + 2), 16);
+    offset += 2;
+
+    const paymentAmountHex = data.substring(offset, offset + 32);
+    const payment_amount = littleEndianHexToBigInt(paymentAmountHex);
+    offset += 32;
+
+    const payment_hash = `0x${data.substring(offset, offset + paymentHashLen * 2)}`;
+    offset += paymentHashLen * 2;
+
+    const remote_htlc_pubkey_hash = `0x${data.substring(offset, offset + 40)}`;
+    offset += 40;
+
+    const local_htlc_pubkey_hash = `0x${data.substring(offset, offset + 40)}`;
+    offset += 40;
+
+    const htlcExpiryHex = data.substring(offset, offset + 16);
+    let htlc_expiry_timestamp = littleEndianHexToBigInt(htlcExpiryHex);
+    htlc_expiry_timestamp = (htlc_expiry_timestamp & ((BigInt(1) << BigInt(56)) - BigInt(1))) * BigInt(1000);
+    const htlc_expiry = new Date(Number(htlc_expiry_timestamp)).toLocaleString('zh-CN');
+    offset += 16;
+
+    htlcs.push({
+      htlc_type,
+      payment_amount,
+      payment_hash,
+      remote_htlc_pubkey_hash,
+      local_htlc_pubkey_hash,
+      htlc_expiry,
+      htlc_expiry_timestamp
+    });
+  }
+
+  const settlement_remote_pubkey_hash = `0x${data.substring(offset, offset + 40)}`;
+  offset += 40;
+  const settlement_remote_amount = littleEndianHexToBigInt(data.substring(offset, offset + 32));
+  offset += 32;
+  const settlement_local_pubkey_hash = `0x${data.substring(offset, offset + 40)}`;
+  offset += 40;
+  const settlement_local_amount = littleEndianHexToBigInt(data.substring(offset, offset + 32));
+  offset += 32;
+
+  const unlocks: UnlockData[] = [];
+  for (let i = 0; i < unlockCount; i++) {
+    const unlock_type = parseInt(data.substring(offset, offset + 2), 16);
+    offset += 2;
+    const with_preimage = parseInt(data.substring(offset, offset + 2), 16);
+    offset += 2;
+    const signature = `0x${data.substring(offset, offset + 130)}`;
+    offset += 130;
+    let preimage = 'N/A';
+    if (with_preimage === 0x01) {
+      preimage = `0x${data.substring(offset, offset + 64)}`;
+      offset += 64;
+    }
+    unlocks.push({
+      unlock_type,
+      with_preimage,
+      signature,
+      preimage
+    });
+  }
+
+  return {
+    settlement: {
+      pending_htlc_count: pendingHtlcCount,
+      htlcs,
+      settlement_remote_pubkey_hash,
+      settlement_remote_amount,
+      settlement_local_pubkey_hash,
+      settlement_local_amount,
+      payment_hash_len: paymentHashLen,
+      unlocks
+    },
+    end: offset
   };
 };
 
@@ -125,9 +246,9 @@ export const parseWitnessV2 = (hex: string): ParsedWitnessData => {
   const unlockCount = parseInt(data.substring(offset, offset + 2), 16);
   offset += 2;
 
-  const witnessData: ParsedWitnessData = { 
-    empty_witness_args: `0x${emptyWitnessArgs}`, 
-    unlock_count: unlockCount 
+  const witnessData: ParsedWitnessData = {
+    empty_witness_args: `0x${emptyWitnessArgs}`,
+    unlock_count: unlockCount
   };
 
   if (unlockCount === 0x00) { // Revocation unlock
@@ -136,86 +257,37 @@ export const parseWitnessV2 = (hex: string): ParsedWitnessData => {
       pubkey: `0x${data.substring(offset + 16, offset + 16 + 64)}`,
       signature: `0x${data.substring(offset + 16 + 64)}`
     };
-  } else { // Settlement unlock
-    const pendingHtlcCount = parseInt(data.substring(offset, offset + 2), 16);
-    offset += 2;
-    const htlcs = [];
-    
-    for (let i = 0; i < pendingHtlcCount; i++) {
-      const htlc_type = parseInt(data.substring(offset, offset + 2), 16);
-      offset += 2;
-
-      const paymentAmountHex = data.substring(offset, offset + 32);
-      const payment_amount = littleEndianHexToBigInt(paymentAmountHex);
-      offset += 32;
-
-      const payment_hash = `0x${data.substring(offset, offset + 40)}`;
-      offset += 40;
-
-      const remote_htlc_pubkey_hash = `0x${data.substring(offset, offset + 40)}`;
-      offset += 40;
-
-      const local_htlc_pubkey_hash = `0x${data.substring(offset, offset + 40)}`;
-      offset += 40;
-
-      const htlcExpiryHex = data.substring(offset, offset + 16);
-      let htlc_expiry_timestamp = littleEndianHexToBigInt(htlcExpiryHex);
-      htlc_expiry_timestamp = (htlc_expiry_timestamp & ((BigInt(1) << BigInt(56)) - BigInt(1))) * BigInt(1000);
-      const htlc_expiry = new Date(Number(htlc_expiry_timestamp)).toLocaleString('zh-CN');
-      offset += 16;
-
-      htlcs.push({
-        htlc_type,
-        payment_amount,
-        payment_hash,
-        remote_htlc_pubkey_hash,
-        local_htlc_pubkey_hash,
-        htlc_expiry,
-        htlc_expiry_timestamp
-      });
-    }
-
-    const settlement_remote_pubkey_hash = `0x${data.substring(offset, offset + 40)}`;
-    offset += 40;
-    const settlement_remote_amount = littleEndianHexToBigInt(data.substring(offset, offset + 32));
-    offset += 32;
-    const settlement_local_pubkey_hash = `0x${data.substring(offset, offset + 40)}`;
-    offset += 40;
-    const settlement_local_amount = littleEndianHexToBigInt(data.substring(offset, offset + 32));
-    offset += 32;
-
-    const unlocks = [];
-    for (let i = 0; i < unlockCount; i++) {
-      const unlock_type = parseInt(data.substring(offset, offset + 2), 16);
-      offset += 2;
-      const with_preimage = parseInt(data.substring(offset, offset + 2), 16);
-      offset += 2;
-      const signature = `0x${data.substring(offset, offset + 130)}`;
-      offset += 130;
-      let preimage = 'N/A';
-      if (with_preimage === 0x01) {
-        preimage = `0x${data.substring(offset, offset + 64)}`;
-        offset += 64;
-      }
-      unlocks.push({
-        unlock_type,
-        with_preimage,
-        signature,
-        preimage
-      });
-    }
-
-    witnessData.settlement = {
-      pending_htlc_count: pendingHtlcCount,
-      htlcs,
-      settlement_remote_pubkey_hash,
-      settlement_remote_amount,
-      settlement_local_pubkey_hash,
-      settlement_local_amount,
-      unlocks
-    };
+    return witnessData;
   }
 
+  // Settlement unlock。
+  // witness 本身不带布局标记，先按 Legacy 解析：Legacy 数据必然恰好消耗完整个
+  // witness，因此只在解析不满时再尝试 v1 布局，避免影响既有数据。
+  const legacy = parseSettlementWitness(
+    data,
+    offset,
+    unlockCount,
+    PAYMENT_HASH_LEN_LEGACY
+  );
+  let settlement = legacy.settlement;
+
+  if (legacy.end !== data.length) {
+    try {
+      const v1 = parseSettlementWitness(
+        data,
+        offset,
+        unlockCount,
+        PAYMENT_HASH_LEN_V1
+      );
+      if (v1.end === data.length) {
+        settlement = v1.settlement;
+      }
+    } catch {
+      // 不是 v1 布局，保留 Legacy 的解析结果
+    }
+  }
+
+  witnessData.settlement = settlement;
   return witnessData;
 };
 
@@ -244,6 +316,8 @@ export interface SettlementData {
   settlement_remote_amount: bigint;
   settlement_local_pubkey_hash: string;
   settlement_local_amount: bigint;
+  /** 解析该 witness 时采用的 payment hash 长度：20 为 Legacy，32 为 v1 */
+  payment_hash_len: number;
   unlocks: UnlockData[];
 }
 
