@@ -11,7 +11,15 @@ import {
   TransactionOverview,
   CollapsibleSection,
 } from "@/shared/components/ui";
-import { formatTimestamp, parseLockArgsV2, parseWitnessV2, formatBlockNumber, type ParsedWitnessData } from "../utils";
+import {
+  formatTimestamp,
+  parseLockArgsV2,
+  parseWitnessV2,
+  resolveChannelCommitmentFeatures,
+  formatBlockNumber,
+  type CommitmentFeatures,
+  type ParsedWitnessData,
+} from "../utils";
 import type { ChannelStateInfo } from "@/lib/types";
 import { buildTransactionLinkUrl } from "@/lib/utils";
 
@@ -138,6 +146,18 @@ export function ChannelLifecycle({
     (channelState.state === "closed_waiting_onchain_settlement" || isClosedState) &&
     channelState.txs.length > 0
   ) {
+    let commitmentFeatures: CommitmentFeatures | undefined;
+    let commitmentFormatError: unknown;
+    try {
+      commitmentFeatures = resolveChannelCommitmentFeatures(channelState.txs);
+    } catch (error) {
+      commitmentFormatError = error;
+    }
+    const parseChannelWitness = (witness: string) => {
+      if (commitmentFormatError) throw commitmentFormatError;
+      return parseWitnessV2(witness, commitmentFeatures);
+    };
+
     // Calculate commitment transactions
     const commitmentTxs =
       isClosedState && channelState.txs.length > 2
@@ -250,10 +270,10 @@ export function ChannelLifecycle({
                       const witnessArgs = (row as { witness_args: string | null })
                         .witness_args;
                       if (witnessArgs) {
-                        const parsed = parseWitnessV2(witnessArgs) as ParsedWitnessData;
+                        const parsed = parseChannelWitness(witnessArgs);
                         return (
                           <div className="type-body text-primary">
-                            {String(parsed.unlock_count)}
+                            {String(parsed.settlement?.unlocks.length ?? parsed.unlock_count)}
                           </div>
                         );
                       }
@@ -271,7 +291,7 @@ export function ChannelLifecycle({
                       const witnessArgs = (row as { witness_args: string | null })
                         .witness_args;
                       if (witnessArgs) {
-                        const parsed = parseWitnessV2(witnessArgs) as ParsedWitnessData;
+                        const parsed = parseChannelWitness(witnessArgs);
                         const unlockCount = Number(parsed.unlock_count);
                         if (unlockCount > 0 && parsed.settlement) {
                           return (
@@ -429,16 +449,21 @@ export function ChannelLifecycle({
             const tx = channelState.txs[selectedTxIndex];
             let parsedArgs = null;
             let parsedWitness: ParsedWitnessData | null = null;
+            let decodeError: string | null = null;
 
             try {
               if (tx.commitment_args) {
                 parsedArgs = parseLockArgsV2(tx.commitment_args);
               }
+            } catch (e) {
+              decodeError = e instanceof Error ? e.message : "Unsupported commitment data.";
+            }
+            try {
               if (tx.witness_args) {
-                parsedWitness = parseWitnessV2(tx.witness_args) as ParsedWitnessData;
+                parsedWitness = parseChannelWitness(tx.witness_args);
               }
             } catch (e) {
-              console.error("Failed to parse transaction data", e);
+              decodeError = e instanceof Error ? e.message : "Unsupported commitment data.";
             }
 
             const isLastTx = selectedTxIndex === channelState.txs.length - 1;
@@ -510,6 +535,13 @@ export function ChannelLifecycle({
                   ]}
                 />
 
+                {decodeError && (
+                  <InfoBox
+                    title="Unable to decode transaction details"
+                    content={`${decodeError} View the transaction on the explorer for the original data.`}
+                  />
+                )}
+
                 {(parsedArgs || parsedWitness) && (
                   <TransactionOverview
                     title="Channel state snapshot (Decoded from Witness data)"
@@ -561,6 +593,12 @@ export function ChannelLifecycle({
                                   ? "0 (First settlement)"
                                   : "1 (Subsequent commitment update)",
                             },
+                            {
+                              label: "Commitment contract",
+                              value: parsedArgs.has_full_payment_hash
+                                ? "v1 (full payment hash)"
+                                : "Legacy (20-byte hash prefix)",
+                            },
                           ]
                         : []),
                       ...(parsedWitness &&
@@ -584,6 +622,12 @@ export function ChannelLifecycle({
                             {
                               label: "Settlement remote amount",
                               value: String(parsedWitness.settlement.settlement_remote_amount),
+                            },
+                            {
+                              label: "Payment hash format",
+                              value: parsedWitness.settlement.payment_hash_len === 32
+                                ? "32 bytes (v1 full hash)"
+                                : "20 bytes (Legacy prefix)",
                             },
                           ]
                         : []),
