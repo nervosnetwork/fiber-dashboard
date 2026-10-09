@@ -78,52 +78,104 @@ export const parseEpoch = (epoch: bigint) => {
   };
 };
 
-/**
- * 解析 Lock Args V2
- */
-export const parseLockArgsV2 = (hex: string) => {
-  const data = hex.startsWith('0x') ? hex.substring(2) : hex;
+export type CommitmentFeatures = 0 | 1;
+
+const EMPTY_WITNESS_ARGS = "10000000100000001000000010000000";
+
+// substring silently returns short data on overrun. Every field must be complete.
+const hexReader = (hex: string) => {
+  const data = hex.replace(/^0x/i, "").toLowerCase();
+  if (!/^(?:[0-9a-f]{2})+$/.test(data)) {
+    throw new Error("Invalid hexadecimal transaction data.");
+  }
   let offset = 0;
+  return {
+    data,
+    get remainingBytes() {
+      return (data.length - offset) / 2;
+    },
+    read(bytes: number): string {
+      const end = offset + bytes * 2;
+      if (end > data.length) {
+        throw new Error("Transaction data is truncated.");
+      }
+      const value = data.slice(offset, end);
+      offset = end;
+      return value;
+    },
+    assertEnd() {
+      if (offset !== data.length) {
+        throw new Error("Transaction data does not match the commitment format.");
+      }
+    },
+  };
+};
 
-  const pubkeyHash = data.substring(offset, offset + 40);
-  offset += 40;
+/** Legacy: 57 bytes. Full payment hash: 58 bytes with features exactly 0x01. */
+export const parseLockArgsV2 = (hex: string) => {
+  const reader = hexReader(hex);
+  const { data } = reader;
+  let features: CommitmentFeatures;
+  if (data.length === 57 * 2) {
+    features = 0;
+  } else if (data.length === 58 * 2 && data.slice(57 * 2) === "01") {
+    features = 1;
+  } else {
+    throw new Error("Unsupported commitment lock args length or features.");
+  }
 
-  const delayEpochHex = data.substring(offset, offset + 16);
-  const delayEpoch = littleEndianHexToBigInt(delayEpochHex);
-  offset += 16;
-
-  const versionHex = data.substring(offset, offset + 16);
-  const version = BigInt('0x' + versionHex);
-  offset += 16;
-
-  const settlementHash = data.substring(offset, offset + 40);
-  offset += 40;
-
-  const settlementFlagHex = data.substring(offset, offset + 2);
-  const settlement_flag = settlementFlagHex ? parseInt(settlementFlagHex, 16) : 0;
-  offset += 2;
+  const pubkey_hash = `0x${reader.read(20)}`;
+  const delay_epoch = parseEpoch(littleEndianHexToBigInt(reader.read(8)));
+  const version = BigInt(`0x${reader.read(8)}`).toString();
+  const settlement_hash = `0x${reader.read(20)}`;
+  const settlement_flag = parseInt(reader.read(1), 16);
 
   return {
-    pubkey_hash: `0x${pubkeyHash}`,
-    delay_epoch: parseEpoch(delayEpoch),
-    version: version.toString(),
-    settlement_hash: settlementHash ? `0x${settlementHash}` : '',
-    settlement_flag: settlement_flag
+    pubkey_hash,
+    delay_epoch,
+    version,
+    settlement_hash,
+    settlement_flag,
+    features,
+    has_full_payment_hash: features === 1,
   };
 };
 
 /**
- * 解析 Witness V2
+ * The API returns output args, including null on final settlement, and does not
+ * order transactions within a block. The contract preserves features across
+ * derived settlement cells, so all known args in a channel must agree. Do not
+ * infer a layout from witness length or assume the previous row is the input.
  */
-export const parseWitnessV2 = (hex: string): ParsedWitnessData => {
-  const data = hex.startsWith('0x') ? hex.substring(2) : hex;
-  let offset = 0;
+export const resolveChannelCommitmentFeatures = (
+  transactions: readonly { commitment_args: string | null }[]
+): CommitmentFeatures | undefined => {
+  let features: CommitmentFeatures | undefined;
+  for (const transaction of transactions) {
+    if (transaction.commitment_args === null) continue;
+    const current = parseLockArgsV2(transaction.commitment_args).features;
+    if (features !== undefined && current !== features) {
+      throw new Error("Conflicting commitment formats in this channel's history.");
+    }
+    features = current;
+  }
+  return features;
+};
 
-  const emptyWitnessArgs = data.substring(offset, offset + 32);
-  offset += 32;
-
-  const unlockCount = parseInt(data.substring(offset, offset + 2), 16);
-  offset += 2;
+/**
+ * Decode a commitment witness with features from validated channel args.
+ * Only revocation witnesses can be decoded without those features.
+ */
+export const parseWitnessV2 = (
+  hex: string,
+  features?: CommitmentFeatures
+): ParsedWitnessData => {
+  const reader = hexReader(hex);
+  const emptyWitnessArgs = reader.read(16);
+  if (emptyWitnessArgs !== EMPTY_WITNESS_ARGS) {
+    throw new Error("Unsupported commitment witness header.");
+  }
+  const unlockCount = parseInt(reader.read(1), 16);
 
   const witnessData: ParsedWitnessData = { 
     empty_witness_args: `0x${emptyWitnessArgs}`, 
@@ -132,37 +184,27 @@ export const parseWitnessV2 = (hex: string): ParsedWitnessData => {
 
   if (unlockCount === 0x00) { // Revocation unlock
     witnessData.revocation = {
-      version: BigInt('0x' + data.substring(offset, offset + 16)),
-      pubkey: `0x${data.substring(offset + 16, offset + 16 + 64)}`,
-      signature: `0x${data.substring(offset + 16 + 64)}`
+      version: BigInt(`0x${reader.read(8)}`),
+      pubkey: `0x${reader.read(32)}`,
+      signature: `0x${reader.read(64)}`
     };
   } else { // Settlement unlock
-    const pendingHtlcCount = parseInt(data.substring(offset, offset + 2), 16);
-    offset += 2;
+    if (features !== 0 && features !== 1) {
+      throw new Error("Commitment format is unavailable in this channel's history.");
+    }
+    const paymentHashLength = features === 1 ? 32 : 20;
+    const pendingHtlcCount = parseInt(reader.read(1), 16);
     const htlcs = [];
     
     for (let i = 0; i < pendingHtlcCount; i++) {
-      const htlc_type = parseInt(data.substring(offset, offset + 2), 16);
-      offset += 2;
-
-      const paymentAmountHex = data.substring(offset, offset + 32);
-      const payment_amount = littleEndianHexToBigInt(paymentAmountHex);
-      offset += 32;
-
-      const payment_hash = `0x${data.substring(offset, offset + 40)}`;
-      offset += 40;
-
-      const remote_htlc_pubkey_hash = `0x${data.substring(offset, offset + 40)}`;
-      offset += 40;
-
-      const local_htlc_pubkey_hash = `0x${data.substring(offset, offset + 40)}`;
-      offset += 40;
-
-      const htlcExpiryHex = data.substring(offset, offset + 16);
-      let htlc_expiry_timestamp = littleEndianHexToBigInt(htlcExpiryHex);
+      const htlc_type = parseInt(reader.read(1), 16);
+      const payment_amount = littleEndianHexToBigInt(reader.read(16));
+      const payment_hash = `0x${reader.read(paymentHashLength)}`;
+      const remote_htlc_pubkey_hash = `0x${reader.read(20)}`;
+      const local_htlc_pubkey_hash = `0x${reader.read(20)}`;
+      let htlc_expiry_timestamp = littleEndianHexToBigInt(reader.read(8));
       htlc_expiry_timestamp = (htlc_expiry_timestamp & ((BigInt(1) << BigInt(56)) - BigInt(1))) * BigInt(1000);
       const htlc_expiry = new Date(Number(htlc_expiry_timestamp)).toLocaleString('zh-CN');
-      offset += 16;
 
       htlcs.push({
         htlc_type,
@@ -175,27 +217,27 @@ export const parseWitnessV2 = (hex: string): ParsedWitnessData => {
       });
     }
 
-    const settlement_remote_pubkey_hash = `0x${data.substring(offset, offset + 40)}`;
-    offset += 40;
-    const settlement_remote_amount = littleEndianHexToBigInt(data.substring(offset, offset + 32));
-    offset += 32;
-    const settlement_local_pubkey_hash = `0x${data.substring(offset, offset + 40)}`;
-    offset += 40;
-    const settlement_local_amount = littleEndianHexToBigInt(data.substring(offset, offset + 32));
-    offset += 32;
+    const settlement_remote_pubkey_hash = `0x${reader.read(20)}`;
+    const settlement_remote_amount = littleEndianHexToBigInt(reader.read(16));
+    const settlement_local_pubkey_hash = `0x${reader.read(20)}`;
+    const settlement_local_amount = littleEndianHexToBigInt(reader.read(16));
 
     const unlocks = [];
-    for (let i = 0; i < unlockCount; i++) {
-      const unlock_type = parseInt(data.substring(offset, offset + 2), 16);
-      offset += 2;
-      const with_preimage = parseInt(data.substring(offset, offset + 2), 16);
-      offset += 2;
-      const signature = `0x${data.substring(offset, offset + 130)}`;
-      offset += 130;
+    // The contract only uses the header count to distinguish revocation (0)
+    // from settlement. Decode all unlock records, as the contract does.
+    while (reader.remainingBytes > 0) {
+      const unlock_type = parseInt(reader.read(1), 16);
+      if (unlock_type >= pendingHtlcCount && unlock_type !== 0xfe && unlock_type !== 0xff) {
+        throw new Error("Invalid settlement unlock type.");
+      }
+      const with_preimage = parseInt(reader.read(1), 16);
+      if (with_preimage !== 0 && with_preimage !== 1) {
+        throw new Error("Invalid settlement preimage flag.");
+      }
+      const signature = `0x${reader.read(65)}`;
       let preimage = 'N/A';
       if (with_preimage === 0x01) {
-        preimage = `0x${data.substring(offset, offset + 64)}`;
-        offset += 64;
+        preimage = `0x${reader.read(32)}`;
       }
       unlocks.push({
         unlock_type,
@@ -205,6 +247,10 @@ export const parseWitnessV2 = (hex: string): ParsedWitnessData => {
       });
     }
 
+    if (unlocks.length === 0) {
+      throw new Error("Settlement witness has no unlock records.");
+    }
+
     witnessData.settlement = {
       pending_htlc_count: pendingHtlcCount,
       htlcs,
@@ -212,10 +258,12 @@ export const parseWitnessV2 = (hex: string): ParsedWitnessData => {
       settlement_remote_amount,
       settlement_local_pubkey_hash,
       settlement_local_amount,
+      payment_hash_len: paymentHashLength,
       unlocks
     };
   }
 
+  reader.assertEnd();
   return witnessData;
 };
 
@@ -238,6 +286,7 @@ export interface UnlockData {
 }
 
 export interface SettlementData {
+  payment_hash_len: 20 | 32;
   pending_htlc_count: number;
   htlcs: HTLCData[];
   settlement_remote_pubkey_hash: string;
