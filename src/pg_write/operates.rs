@@ -1494,6 +1494,13 @@ impl ChannelGroup {
     }
 }
 
+fn funding_block_number(txs: &[Tx], funding_tx_hash: &H256) -> Option<BlockNumber> {
+    txs.iter().find_map(|tx| match tx {
+        Tx::Grouped(tx) if &tx.tx_hash == funding_tx_hash => Some(tx.block_number),
+        _ => None,
+    })
+}
+
 pub async fn new_channels(
     net: Network,
     channels: Vec<JsonBytes>,
@@ -1567,35 +1574,48 @@ pub async fn new_channels(
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             };
 
+            let Some(funding_block_number) = funding_block_number(&txs.objects, &funding_tx.hash)
+            else {
+                log::warn!(
+                    "Funding transaction {} for channel {:?} is not indexed yet",
+                    funding_tx.hash,
+                    outpoint
+                );
+                return None;
+            };
+            let funding_header = loop {
+                let header = rpc
+                    .get_header_by_number(url.clone(), funding_block_number)
+                    .await;
+                if let Ok(header) = header {
+                    break header;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            };
+            let funding_timestamp = funding_header.inner.timestamp.value();
+
             let mut group = ChannelGroup {
                 net,
                 outpoint,
                 funding_args: funding_args.clone(),
-                last_block_number: 0.into(),
+                last_block_number: funding_block_number,
                 capacity,
-                create_time: 0,
-                last_commit_time: 0,
+                create_time: funding_timestamp,
+                last_commit_time: funding_timestamp,
                 last_commitment_args: None,
                 udt_value,
                 state: DBState::Open,
-                txs: vec![(funding_tx.hash.clone(), 0.into(), 0, None, None)],
+                txs: vec![(
+                    funding_tx.hash.clone(),
+                    funding_block_number,
+                    funding_timestamp,
+                    None,
+                    None,
+                )],
             };
             for tx in txs.objects {
                 if let Tx::Grouped(tc) = &tx {
                     if tc.tx_hash == funding_tx.hash {
-                        let header = loop {
-                            let header =
-                                rpc.get_header_by_number(url.clone(), tc.block_number).await;
-                            if let Ok(header) = header {
-                                break header;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        };
-                        group.create_time = header.inner.timestamp.value();
-                        group.last_commit_time = header.inner.timestamp.value();
-                        group.last_block_number = tc.block_number;
-                        group.txs[0].1 = tc.block_number;
-                        group.txs[0].2 = header.inner.timestamp.value();
                         continue;
                     }
                     let new_tx = loop {
@@ -1746,14 +1766,14 @@ pub async fn new_channels(
                     }
                 }
             }
-            group
+            Some(group)
         });
         handles.push(handle);
     }
 
     let groups: Vec<ChannelGroup> = futures::stream::iter(handles)
         .buffer_unordered(2048)
-        .map(|x| x.unwrap())
+        .filter_map(|x| async move { x.unwrap() })
         .collect()
         .await;
 
@@ -1801,6 +1821,37 @@ pub fn multiaddr_to_socketaddr(addr: &Multiaddr) -> Option<SocketAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn grouped_tx(tx_hash: H256, block_number: u64) -> Tx {
+        Tx::Grouped(crate::types::TxWithCells {
+            tx_hash,
+            block_number: block_number.into(),
+            tx_index: 0.into(),
+            cells: vec![],
+        })
+    }
+
+    #[test]
+    fn funding_block_number_requires_matching_transaction() {
+        let funding_tx_hash = H256::from([1; 32]);
+        let transactions = vec![grouped_tx(H256::from([2; 32]), 42)];
+
+        assert_eq!(funding_block_number(&transactions, &funding_tx_hash), None);
+    }
+
+    #[test]
+    fn funding_block_number_returns_matching_transaction_block() {
+        let funding_tx_hash = H256::from([1; 32]);
+        let transactions = vec![
+            grouped_tx(H256::from([2; 32]), 42),
+            grouped_tx(funding_tx_hash.clone(), 84),
+        ];
+
+        assert_eq!(
+            funding_block_number(&transactions, &funding_tx_hash),
+            Some(84.into())
+        );
+    }
 
     #[test]
     fn known_channel_outpoints_are_not_returned_as_new_channels() {
