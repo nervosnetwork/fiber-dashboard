@@ -1368,7 +1368,7 @@ impl ChannelStateUpdate {
             let mut query_builder: sqlx::QueryBuilder<'_, sqlx::Postgres> =
                 sqlx::QueryBuilder::new(&sql);
             query_builder.push_values(
-                &chunk,
+                chunk,
                 |mut b, (outpoint, tx_hash, block_number, timestamp, witness_args, commitment_args)| {
                     b.push_bind(hex_string(outpoint.as_bytes()))
                         .push_bind(hex_string(tx_hash.as_bytes()))
