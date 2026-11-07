@@ -309,19 +309,21 @@ pub async fn daily_statistics(
             "Insert into {} (day, channels_count, asset_analysis, capacity_analysis, nodes_count) ",
             net.daily_summarized_data()
         );
-        let mut query_builder: sqlx::QueryBuilder<'_, sqlx::Postgres> =
-            sqlx::QueryBuilder::new(&insert_sql);
+        for chunk in summarized_data.chunks(65535 / 5) {
+            let mut query_builder: sqlx::QueryBuilder<'_, sqlx::Postgres> =
+                sqlx::QueryBuilder::new(&insert_sql);
 
-        query_builder.push_values(summarized_data.iter().take(65535 / 5), |mut b, sd| {
-            b.push_bind(sd.date)
-                .push_bind(sqlx::types::Json(&sd.channels_count))
-                .push_bind(sqlx::types::Json(&sd.asset_analysis))
-                .push_bind(sqlx::types::Json(&sd.capacity_analysis))
-                .push_bind(sd.nodes_count);
-        });
+            query_builder.push_values(chunk, |mut b, sd| {
+                b.push_bind(sd.date)
+                    .push_bind(sqlx::types::Json(&sd.channels_count))
+                    .push_bind(sqlx::types::Json(&sd.asset_analysis))
+                    .push_bind(sqlx::types::Json(&sd.capacity_analysis))
+                    .push_bind(sd.nodes_count);
+            });
 
-        query_builder.push(" On Conflict (day) Do Nothing");
-        query_builder.build().execute(pool).await?;
+            query_builder.push(" On Conflict (day) Do Nothing");
+            query_builder.build().execute(pool).await?;
+        }
     }
 
     Ok(())
@@ -1343,8 +1345,6 @@ impl ChannelStateUpdate {
             "insert into {} (channel_outpoint, tx_hash, block_number, timestamp, witness_args, commitment_args) ",
             net.channel_txs()
         );
-        let mut query_builder: sqlx::QueryBuilder<'_, sqlx::Postgres> =
-            sqlx::QueryBuilder::new(sql);
         let combin = updates
             .iter()
             .flat_map(|cu| std::iter::repeat(cu.outpoint.clone()).zip(cu.txs.iter()))
@@ -1359,20 +1359,25 @@ impl ChannelStateUpdate {
                         commitment_args,
                     )
                 },
+            )
+            .collect::<Vec<_>>();
+        for chunk in combin.chunks(65535 / 6) {
+            let mut query_builder: sqlx::QueryBuilder<'_, sqlx::Postgres> =
+                sqlx::QueryBuilder::new(&sql);
+            query_builder.push_values(
+                chunk,
+                |mut b, (outpoint, tx_hash, block_number, timestamp, witness_args, commitment_args)| {
+                    b.push_bind(hex_string(outpoint.as_bytes()))
+                        .push_bind(hex_string(tx_hash.as_bytes()))
+                        .push_bind(hex_string(block_number.value().to_be_bytes().as_ref()))
+                        .push_bind(timestamp)
+                        .push_bind(witness_args.as_ref().map(|a| hex_string(a.as_bytes())))
+                        .push_bind(commitment_args.as_ref().map(|a| hex_string(a.as_bytes())));
+                },
             );
-        query_builder.push_values(
-            combin.take(65535 / 6),
-            |mut b, (outpoint, tx_hash, block_number, timestamp, witness_args, commitment_args)| {
-                b.push_bind(hex_string(outpoint.as_bytes()))
-                    .push_bind(hex_string(tx_hash.as_bytes()))
-                    .push_bind(hex_string(block_number.value().to_be_bytes().as_ref()))
-                    .push_bind(timestamp)
-                    .push_bind(witness_args.as_ref().map(|a| hex_string(a.as_bytes())))
-                    .push_bind(commitment_args.as_ref().map(|a| hex_string(a.as_bytes())));
-            },
-        );
-        let query = query_builder.build();
-        let _ = query.execute(conn).await?;
+            let query = query_builder.build();
+            let _ = query.execute(&mut *conn).await?;
+        }
         Ok(())
     }
 }
