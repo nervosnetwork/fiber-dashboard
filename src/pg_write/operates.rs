@@ -2,8 +2,8 @@ use crate::{
     CKB_MAINNET_RPC, CKB_TESTNET_RPC, RpcClient, get_pg_pool,
     ip_location::lookup_ipinfo,
     pg_write::{
-        ChannelInfoDBSchema, Network, NodeInfoDBSchema, RelationCache, UdtInfos, UdtNodeRelation,
-        UdtdepRelation, global_cache, global_cache_testnet,
+        ChannelInfoDBSchema, Network, NodeInfoDBSchema, PGBIND_LIMIT, RelationCache, UdtInfos,
+        UdtNodeRelation, UdtdepRelation, global_cache, global_cache_testnet,
     },
     rpc_client::{CKB_MAINNET_RPC_BEARER_TOKEN, CKB_TESTNET_RPC_BEARER_TOKEN},
     types::{
@@ -309,7 +309,7 @@ pub async fn daily_statistics(
             "Insert into {} (day, channels_count, asset_analysis, capacity_analysis, nodes_count) ",
             net.daily_summarized_data()
         );
-        for chunk in summarized_data.chunks(65535 / 5) {
+        for chunk in summarized_data.chunks(PGBIND_LIMIT / 5) {
             let mut query_builder: sqlx::QueryBuilder<'_, sqlx::Postgres> =
                 sqlx::QueryBuilder::new(&insert_sql);
 
@@ -1361,7 +1361,7 @@ impl ChannelStateUpdate {
                 },
             )
             .collect::<Vec<_>>();
-        for chunk in combin.chunks(65535 / 6) {
+        for chunk in combin.chunks(PGBIND_LIMIT / 6) {
             let mut query_builder: sqlx::QueryBuilder<'_, sqlx::Postgres> =
                 sqlx::QueryBuilder::new(&sql);
             query_builder.push_values(

@@ -27,7 +27,7 @@ pub const CHANNEL_INFO_INSERT_SQL: &str = "insert into {} (
 ) ";
 
 /// Postgres accepts at most 65535 bind parameters per statement.
-const PGBIND_LIMIT: usize = 65535;
+pub(crate) const PGBIND_LIMIT: usize = 65535;
 
 #[derive(sqlx::FromRow)]
 pub struct UdtInfoCache {
@@ -175,7 +175,7 @@ impl NodeInfoDBSchema {
             return Ok(());
         }
         let sql = NODE_INFO_INSERT_SQL.replace("{}", net.node_infos());
-        for chunk in nodes.chunks(PGBIND_LIMIT / 12) {
+        for chunk in nodes.chunks(PGBIND_LIMIT / 11) {
             let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(&sql);
 
             query_builder.push_values(chunk, |mut b, node| {
