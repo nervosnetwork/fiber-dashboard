@@ -50,11 +50,28 @@ pub struct NodeInfo {
     pub udt_cfg_infos: UdtCfgInfos,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct UdtCfgInfos(
     /// The list of UDT configuration infos.
     pub Vec<UdtArgInfo>,
 );
+
+impl<'de> Deserialize<'de> for UdtCfgInfos {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+        let mut infos = Vec::with_capacity(raw.len());
+        for value in raw {
+            match serde_json::from_value::<UdtArgInfo>(value) {
+                Ok(info) => infos.push(info),
+                Err(err) => log::warn!("Skipping invalid UDT config: {}", err),
+            }
+        }
+        Ok(UdtCfgInfos(infos))
+    }
+}
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -391,3 +408,37 @@ pub static TESTNET_COMMITMENT_CODE_HASH: LazyLock<H256> = LazyLock::new(|| {
             "0x740dee83f87c6f309824d8fd3fbdd3c8380ee6fc9acc90b1a748438afcdf81d8"
         ))
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn invalid_udt_cfg_infos_are_skipped() {
+        let valid = json!({
+            "name": "RUSD",
+            "script": {
+                "code_hash": "0x1142755a044bf2ee358cba9f2da187ce928c91cd4dc8692ded0337efa677d21a",
+                "hash_type": "type",
+                "args": "0x878fcc6f1f08d48e87bb1c3b3d5083f23f8a39c5d5c764f253b55b998526439b"
+            },
+            "auto_accept_amount": "0x3b9aca00",
+            "cell_deps": []
+        });
+        let invalid = json!({
+            "name": "BAD",
+            "script": {
+                "code_hash": "0x1142755a044bf2ee358cba9f2da187ce928c91cd4dc8692ded0337efa677d21a",
+                "hash_type": "type",
+                "args": "^0x878fcc6f1f08d48e87bb1c3b3d5083f23f8a39c5d5c764f253b55b998526439b$"
+            },
+            "auto_accept_amount": null,
+            "cell_deps": []
+        });
+
+        let infos: UdtCfgInfos = serde_json::from_value(json!([valid, invalid])).unwrap();
+        assert_eq!(infos.0.len(), 1);
+        assert_eq!(infos.0[0].name, "RUSD");
+    }
+}
