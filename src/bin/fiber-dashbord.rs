@@ -21,19 +21,30 @@ use fiber_dashbord_backend::{
 use reqwest::Url;
 use sqlx::{Row, types::chrono::Utc};
 
-fn open_fds() -> usize {
-    std::fs::read_dir("/proc/self/fd")
-        .map(|entries| entries.filter_map(Result::ok).count())
-        .unwrap_or(0)
+fn open_fds() -> Option<usize> {
+    match std::fs::read_dir("/proc/self/fd") {
+        Ok(entries) => Some(entries.filter_map(Result::ok).count()),
+        Err(err) => {
+            log::warn!("Failed to read /proc/self/fd: {}", err);
+            None
+        }
+    }
 }
 
-fn max_fds() -> Option<u64> {
-    let limits = std::fs::read_to_string("/proc/self/limits").ok()?;
-    limits
+fn fd_limits() -> (Option<u64>, Option<u64>) {
+    let Ok(limits) = std::fs::read_to_string("/proc/self/limits") else {
+        return (None, None);
+    };
+    let Some(line) = limits
         .lines()
         .find(|line| line.starts_with("Max open files"))
-        .and_then(|line| line.split_whitespace().nth(3))
-        .and_then(|limit| limit.parse().ok())
+    else {
+        return (None, None);
+    };
+    let mut values = line.split_whitespace().skip(3);
+    let soft = values.next().and_then(|value| value.parse().ok());
+    let hard = values.next().and_then(|value| value.parse().ok());
+    (soft, hard)
 }
 
 fn main() {
@@ -104,6 +115,7 @@ async fn http_server() {
         let daily_commit_task_heartbeat = DAILY_COMMIT_TASK_HEARTBEAT.load(Ordering::Acquire);
         let hourly_fresh_task_heartbeat = HOURLY_FRESH_TASK_HEARTBEAT.load(Ordering::Acquire);
         let channel_monitor_heartbeat = CHANNEL_MONITOR_HEARTBEAT.load(Ordering::Acquire);
+        let (fd_soft_limit, fd_hard_limit) = fd_limits();
 
         Ok(serde_json::to_string(&serde_json::json!({
             "timed_commit_states_heartbeat": timed_commit_states_heartbeat,
@@ -111,7 +123,8 @@ async fn http_server() {
             "hourly_fresh_task_heartbeat": hourly_fresh_task_heartbeat,
             "channel_monitor_heartbeat": channel_monitor_heartbeat,
             "open_fds": open_fds(),
-            "max_fds": max_fds(),
+            "fd_soft_limit": fd_soft_limit,
+            "fd_hard_limit": fd_hard_limit,
         }))
         .unwrap())
     }
@@ -149,7 +162,12 @@ async fn http_server() {
     let listener = TcpListener::new(format!("0.0.0.0:{}", http_port))
         .bind()
         .await;
-    log::info!("Open file limit: {:?}", max_fds());
+    let (fd_soft_limit, fd_hard_limit) = fd_limits();
+    log::info!(
+        "Open file limits (soft/hard): {:?}/{:?}",
+        fd_soft_limit,
+        fd_hard_limit
+    );
     log::info!("Starting HTTP server on port {}", http_port);
     Server::new(listener).serve(service).await;
 }

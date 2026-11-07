@@ -1753,7 +1753,15 @@ pub async fn new_channels(
 
     let groups: Vec<ChannelGroup> = futures::stream::iter(handles)
         .buffer_unordered(256)
-        .map(|x| x.unwrap())
+        .filter_map(|res| async move {
+            match res {
+                Ok(group) => Some(group),
+                Err(err) => {
+                    log::error!("new channel task failed: {}", err);
+                    None
+                }
+            }
+        })
         .collect()
         .await;
 
