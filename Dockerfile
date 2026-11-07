@@ -1,4 +1,4 @@
-FROM rust:1.92.0-slim as build
+FROM rust:1.95.0-slim AS build
 WORKDIR /usr/src/fiber-dashbord-backend
 
 RUN apt-get update && \

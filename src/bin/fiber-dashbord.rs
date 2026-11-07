@@ -21,6 +21,33 @@ use fiber_dashbord_backend::{
 use reqwest::Url;
 use sqlx::{Row, types::chrono::Utc};
 
+fn open_fds() -> Option<usize> {
+    match std::fs::read_dir("/proc/self/fd") {
+        // read_dir's own directory fd is listed inside /proc/self/fd.
+        Ok(entries) => Some(entries.filter_map(Result::ok).count().saturating_sub(1)),
+        Err(err) => {
+            log::warn!("Failed to read /proc/self/fd: {}", err);
+            None
+        }
+    }
+}
+
+fn fd_limits() -> (Option<u64>, Option<u64>) {
+    let Ok(limits) = std::fs::read_to_string("/proc/self/limits") else {
+        return (None, None);
+    };
+    let Some(line) = limits
+        .lines()
+        .find(|line| line.starts_with("Max open files"))
+    else {
+        return (None, None);
+    };
+    let mut values = line.split_whitespace().skip(3);
+    let soft = values.next().and_then(|value| value.parse().ok());
+    let hard = values.next().and_then(|value| value.parse().ok());
+    (soft, hard)
+}
+
 fn main() {
     env_logger::init();
     if std::env::var("ALLOW_EXIT_ON_PANIC")
@@ -29,7 +56,24 @@ fn main() {
         .unwrap_or(true)
     {
         std::panic::set_hook(Box::new(|info| {
-            log::error!("Panic occurred: {:?}", info);
+            let payload = info.payload();
+            let message = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("<non-string panic payload>");
+            let location = info
+                .location()
+                .map(|location| {
+                    format!(
+                        "{}:{}:{}",
+                        location.file(),
+                        location.line(),
+                        location.column()
+                    )
+                })
+                .unwrap_or_else(|| "<unknown location>".to_string());
+            log::error!("Panic occurred at {}: {}", location, message);
             std::process::exit(1);
         }));
     }
@@ -72,12 +116,19 @@ async fn http_server() {
         let daily_commit_task_heartbeat = DAILY_COMMIT_TASK_HEARTBEAT.load(Ordering::Acquire);
         let hourly_fresh_task_heartbeat = HOURLY_FRESH_TASK_HEARTBEAT.load(Ordering::Acquire);
         let channel_monitor_heartbeat = CHANNEL_MONITOR_HEARTBEAT.load(Ordering::Acquire);
+        let (open_fd_count, (fd_soft_limit, fd_hard_limit)) =
+            tokio::task::spawn_blocking(|| (open_fds(), fd_limits()))
+                .await
+                .unwrap_or((None, (None, None)));
 
         Ok(serde_json::to_string(&serde_json::json!({
             "timed_commit_states_heartbeat": timed_commit_states_heartbeat,
             "daily_commit_task_heartbeat": daily_commit_task_heartbeat,
             "hourly_fresh_task_heartbeat": hourly_fresh_task_heartbeat,
             "channel_monitor_heartbeat": channel_monitor_heartbeat,
+            "open_fds": open_fd_count,
+            "fd_soft_limit": fd_soft_limit,
+            "fd_hard_limit": fd_hard_limit,
         }))
         .unwrap())
     }
@@ -115,6 +166,12 @@ async fn http_server() {
     let listener = TcpListener::new(format!("0.0.0.0:{}", http_port))
         .bind()
         .await;
+    let (fd_soft_limit, fd_hard_limit) = fd_limits();
+    log::info!(
+        "Open file limits (soft/hard): {:?}/{:?}",
+        fd_soft_limit,
+        fd_hard_limit
+    );
     log::info!("Starting HTTP server on port {}", http_port);
     Server::new(listener).serve(service).await;
 }
