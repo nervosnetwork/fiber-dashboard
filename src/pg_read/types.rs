@@ -67,7 +67,7 @@ ORDER BY {1}.channel_outpoint, bucket DESC";
 const SELECT_MONTHLY_NODES_SQL: &str = "
 WITH latest_channels AS (
   SELECT DISTINCT ON (channel_outpoint) channel_outpoint, node1, node2
-  FROM online_channels_hourly
+  FROM {channels}
   WHERE bucket >= $1::timestamp and bucket < $2::timestamp
   ORDER BY channel_outpoint, bucket DESC
 ),
@@ -93,7 +93,7 @@ SELECT DISTINCT ON (n.node_id)
   n.city,
   n.region,
   n.loc,
-  c.channel_count,
+  COALESCE(c.channel_count, 0) AS channel_count,
   COUNT(*) OVER() as total_count
 FROM {nodes} n
 LEFT JOIN channel_counts c ON n.node_id = c.node
@@ -360,8 +360,9 @@ impl HourlyNodeInfoDBRead {
         if end - start > chrono::Duration::days(30) || start > end {
             end = start + chrono::Duration::days(30);
         }
-        let base_sql =
-            SELECT_MONTHLY_NODES_SQL.replace("{nodes}", params.net.online_nodes_hourly());
+        let base_sql = SELECT_MONTHLY_NODES_SQL
+            .replace("{nodes}", params.net.online_nodes_hourly())
+            .replace("{channels}", params.net.online_channels_hourly());
         let sql = format!("{} LIMIT {} OFFSET {}", base_sql, page_size, offset);
         let rows = sqlx::query(&sql)
             .bind(start)

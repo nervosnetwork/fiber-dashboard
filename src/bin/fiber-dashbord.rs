@@ -217,6 +217,7 @@ static NETS: LazyLock<Vec<fiber_dashbord_backend::Network>> = LazyLock::new(|| {
 });
 
 static TIMED_COMMIT_STATES_HEARTBEAT: AtomicU64 = AtomicU64::new(0);
+const MAX_GRAPH_FETCH_ATTEMPTS: u32 = 5;
 
 async fn timed_commit_states() {
     let mut rpc = RpcClient::new();
@@ -263,9 +264,11 @@ async fn timed_commit_states_inner(
 
         let mut raw_nodes = Vec::new();
         let mut after_cursor = None;
+        let mut attempts = 0;
+        let mut nodes_complete = true;
 
         loop {
-            if let Ok(nodes) = rpc
+            match rpc
                 .get_node_graph(
                     url.clone(),
                     GraphNodesParams {
@@ -275,25 +278,55 @@ async fn timed_commit_states_inner(
                 )
                 .await
             {
-                let has_more = nodes.nodes.len() == 500;
-                raw_nodes.extend(nodes.nodes);
+                Ok(nodes) => {
+                    attempts = 0;
+                    let has_more = nodes.nodes.len() == 500;
+                    raw_nodes.extend(nodes.nodes);
 
-                if !has_more {
-                    break;
+                    if !has_more {
+                        break;
+                    }
+
+                    after_cursor = Some(nodes.last_cursor);
                 }
-
-                after_cursor = Some(nodes.last_cursor);
-            } else {
-                log::warn!("Failed to get {:?}'s node graph", net);
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                Err(err) => {
+                    attempts += 1;
+                    log::warn!(
+                        "Failed to get {:?}'s node graph (attempt {}/{}): {}",
+                        net,
+                        attempts,
+                        MAX_GRAPH_FETCH_ATTEMPTS,
+                        err
+                    );
+                    if attempts >= MAX_GRAPH_FETCH_ATTEMPTS {
+                        log::error!(
+                            "Giving up on {:?}'s node graph after {} attempts",
+                            net,
+                            attempts
+                        );
+                        nodes_complete = false;
+                        break;
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
             }
+        }
+
+        if !nodes_complete {
+            log::error!(
+                "Skipping {:?} sync: node graph fetch failed, UDTs cannot be resolved",
+                net
+            );
+            continue;
         }
 
         let mut raw_channels = Vec::new();
         let mut after_cursor = None;
+        let mut attempts = 0;
+        let mut channels_complete = true;
 
         loop {
-            if let Ok(channels) = rpc
+            match rpc
                 .get_channel_graph(
                     url.clone(),
                     GraphChannelsParams {
@@ -303,18 +336,51 @@ async fn timed_commit_states_inner(
                 )
                 .await
             {
-                let has_more = channels.channels.len() == 500;
-                raw_channels.extend(channels.channels);
+                Ok(channels) => {
+                    attempts = 0;
+                    let has_more = channels.channels.len() == 500;
+                    raw_channels.extend(channels.channels);
 
-                if !has_more {
-                    break;
+                    if !has_more {
+                        break;
+                    }
+
+                    after_cursor = Some(channels.last_cursor);
                 }
-
-                after_cursor = Some(channels.last_cursor);
-            } else {
-                log::warn!("Failed to get {:?}'s channel graph", net);
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                Err(err) => {
+                    attempts += 1;
+                    log::warn!(
+                        "Failed to get {:?}'s channel graph (attempt {}/{}): {}",
+                        net,
+                        attempts,
+                        MAX_GRAPH_FETCH_ATTEMPTS,
+                        err
+                    );
+                    if attempts >= MAX_GRAPH_FETCH_ATTEMPTS {
+                        log::error!(
+                            "Giving up on {:?}'s channel graph after {} attempts",
+                            net,
+                            attempts
+                        );
+                        channels_complete = false;
+                        break;
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
             }
+        }
+
+        if !channels_complete {
+            log::error!("Discarding incomplete {:?} channel graph", net);
+            raw_channels.clear();
+        }
+
+        if raw_nodes.is_empty() || raw_channels.is_empty() {
+            log::error!(
+                "Incomplete {:?} graph data fetched this cycle, skipping insert",
+                net
+            );
+            continue;
         }
 
         let mut node_schemas = Vec::with_capacity(raw_nodes.len());
