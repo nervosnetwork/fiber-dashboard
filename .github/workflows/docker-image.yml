@@ -4,7 +4,27 @@ on:
   push:
     branches:
       - "**"
+    paths:
+      - "**"
+      - "!app/**"
+      - "!**/README*"
+      - "!compose*.yaml"
+      - "!compose*.yml"
+      - "!.env.example"
+      - "!.gitignore"
+      - "!.github/**"
+      - ".github/workflows/docker-image.yml"
   pull_request:
+    paths:
+      - "**"
+      - "!app/**"
+      - "!**/README*"
+      - "!compose*.yaml"
+      - "!compose*.yml"
+      - "!.env.example"
+      - "!.gitignore"
+      - "!.github/**"
+      - ".github/workflows/docker-image.yml"
   workflow_dispatch:
 
 permissions:
