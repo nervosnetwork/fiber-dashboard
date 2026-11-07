@@ -1507,6 +1507,11 @@ pub async fn new_channels(
     channels: Vec<JsonBytes>,
     rpc: &RpcClient,
 ) -> Vec<ChannelGroup> {
+    let mut rpc = rpc.clone();
+    match net {
+        Network::Mainnet => rpc.set_bearer_token(CKB_MAINNET_RPC_BEARER_TOKEN.clone()),
+        Network::Testnet => rpc.set_bearer_token(CKB_TESTNET_RPC_BEARER_TOKEN.clone()),
+    }
     let url = match net {
         Network::Mainnet => CKB_MAINNET_RPC.clone(),
         Network::Testnet => CKB_TESTNET_RPC.clone(),
