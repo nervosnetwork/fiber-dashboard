@@ -32,6 +32,8 @@ use std::{
     vec,
 };
 
+const MAX_CONCURRENT_RPC: usize = 256;
+
 pub async fn from_rpc_to_db_schema(
     node_info: NodeInfo,
     net: Network,
@@ -728,6 +730,7 @@ async fn channel_tx_update(channel_states: &mut ChannelStates, rpc: &mut RpcClie
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     };
 
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_RPC));
     let mut handles = Vec::with_capacity(channel_states.channels.len() / 3);
     for (outpoint, state) in channel_states.channels.iter() {
         if matches!(
@@ -739,7 +742,12 @@ async fn channel_tx_update(channel_states: &mut ChannelStates, rpc: &mut RpcClie
         let outpoint = outpoint.clone();
         let state = state.clone();
         let mut rpc = rpc.clone();
+        let semaphore = semaphore.clone();
         let handle = tokio::spawn(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .expect("channel update semaphore closed");
             let mut csus = UpdateType::Nothing;
             match state.state {
                 State::ClosedCooperative | State::ClosedUncooperative => {}
@@ -958,7 +966,7 @@ async fn channel_tx_update(channel_states: &mut ChannelStates, rpc: &mut RpcClie
     let mut mainnet: HashMap<JsonBytes, ChannelStateUpdate> = HashMap::new();
 
     futures::stream::iter(handles)
-        .buffer_unordered(256)
+        .buffer_unordered(MAX_CONCURRENT_RPC)
         .filter_map(|res| async move {
             match res {
                 Ok(ut) => match ut {
@@ -1507,12 +1515,18 @@ pub async fn new_channels(
         Network::Mainnet => &*MAINNET_COMMITMENT_CODE_HASH,
         Network::Testnet => &*TESTNET_COMMITMENT_CODE_HASH,
     };
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_RPC));
     let mut handles = Vec::with_capacity(channels.len());
     for outpoint in channels {
         let rpc = rpc.clone();
         let url = url.clone();
         let code_hash = code_hash.clone();
+        let semaphore = semaphore.clone();
         let handle = tokio::spawn(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .expect("new channel semaphore closed");
             let raw_outpoint = packed::OutPoint::from_slice(outpoint.as_bytes()).unwrap();
 
             let funding_tx = loop {
@@ -1752,7 +1766,7 @@ pub async fn new_channels(
     }
 
     let groups: Vec<ChannelGroup> = futures::stream::iter(handles)
-        .buffer_unordered(256)
+        .buffer_unordered(MAX_CONCURRENT_RPC)
         .filter_map(|res| async move {
             match res {
                 Ok(group) => Some(group),
