@@ -375,8 +375,11 @@ async fn timed_commit_states_inner(
             raw_channels.clear();
         }
 
-        if raw_nodes.is_empty() && raw_channels.is_empty() {
-            log::error!("No {:?} graph data fetched this cycle, skipping insert", net);
+        if raw_nodes.is_empty() || raw_channels.is_empty() {
+            log::error!(
+                "Incomplete {:?} graph data fetched this cycle, skipping insert",
+                net
+            );
             continue;
         }
 
