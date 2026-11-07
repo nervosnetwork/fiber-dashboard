@@ -115,14 +115,17 @@ async fn http_server() {
         let daily_commit_task_heartbeat = DAILY_COMMIT_TASK_HEARTBEAT.load(Ordering::Acquire);
         let hourly_fresh_task_heartbeat = HOURLY_FRESH_TASK_HEARTBEAT.load(Ordering::Acquire);
         let channel_monitor_heartbeat = CHANNEL_MONITOR_HEARTBEAT.load(Ordering::Acquire);
-        let (fd_soft_limit, fd_hard_limit) = fd_limits();
+        let (open_fd_count, (fd_soft_limit, fd_hard_limit)) =
+            tokio::task::spawn_blocking(|| (open_fds(), fd_limits()))
+                .await
+                .unwrap_or((None, (None, None)));
 
         Ok(serde_json::to_string(&serde_json::json!({
             "timed_commit_states_heartbeat": timed_commit_states_heartbeat,
             "daily_commit_task_heartbeat": daily_commit_task_heartbeat,
             "hourly_fresh_task_heartbeat": hourly_fresh_task_heartbeat,
             "channel_monitor_heartbeat": channel_monitor_heartbeat,
-            "open_fds": open_fds(),
+            "open_fds": open_fd_count,
             "fd_soft_limit": fd_soft_limit,
             "fd_hard_limit": fd_hard_limit,
         }))
