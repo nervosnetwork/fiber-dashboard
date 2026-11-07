@@ -23,7 +23,8 @@ use sqlx::{Row, types::chrono::Utc};
 
 fn open_fds() -> Option<usize> {
     match std::fs::read_dir("/proc/self/fd") {
-        Ok(entries) => Some(entries.filter_map(Result::ok).count()),
+        // read_dir's own directory fd is listed inside /proc/self/fd.
+        Ok(entries) => Some(entries.filter_map(Result::ok).count().saturating_sub(1)),
         Err(err) => {
             log::warn!("Failed to read /proc/self/fd: {}", err);
             None
