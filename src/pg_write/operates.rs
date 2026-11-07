@@ -958,7 +958,7 @@ async fn channel_tx_update(channel_states: &mut ChannelStates, rpc: &mut RpcClie
     let mut mainnet: HashMap<JsonBytes, ChannelStateUpdate> = HashMap::new();
 
     futures::stream::iter(handles)
-        .buffer_unordered(2048)
+        .buffer_unordered(256)
         .filter_map(|res| async move {
             match res {
                 Ok(ut) => match ut {
@@ -1752,7 +1752,7 @@ pub async fn new_channels(
     }
 
     let groups: Vec<ChannelGroup> = futures::stream::iter(handles)
-        .buffer_unordered(2048)
+        .buffer_unordered(256)
         .map(|x| x.unwrap())
         .collect()
         .await;

@@ -64,7 +64,12 @@ macro_rules! jsonrpc {
 
             match output {
                 jsonrpc_core::response::Output::Success(success) => {
-                    Ok(serde_json::from_value::<$return>(success.result).unwrap())
+                    serde_json::from_value::<$return>(success.result).map_err(|err| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("failed to decode {} response: {}", $method, err),
+                        )
+                    })
                 }
                 jsonrpc_core::response::Output::Failure(e) => {
                     Err(io::Error::new(io::ErrorKind::InvalidData, format!("{:?}", e)))
@@ -93,7 +98,7 @@ impl RpcClient {
         RpcClient {
             raw: Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
-                .pool_max_idle_per_host(2048)
+                .pool_max_idle_per_host(64)
                 .build()
                 .unwrap(),
             id: Arc::new(AtomicU64::new(0)),

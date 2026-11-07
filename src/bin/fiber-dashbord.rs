@@ -21,6 +21,21 @@ use fiber_dashbord_backend::{
 use reqwest::Url;
 use sqlx::{Row, types::chrono::Utc};
 
+fn open_fds() -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .map(|entries| entries.filter_map(Result::ok).count())
+        .unwrap_or(0)
+}
+
+fn max_fds() -> Option<u64> {
+    let limits = std::fs::read_to_string("/proc/self/limits").ok()?;
+    limits
+        .lines()
+        .find(|line| line.starts_with("Max open files"))
+        .and_then(|line| line.split_whitespace().nth(3))
+        .and_then(|limit| limit.parse().ok())
+}
+
 fn main() {
     env_logger::init();
     if std::env::var("ALLOW_EXIT_ON_PANIC")
@@ -29,7 +44,24 @@ fn main() {
         .unwrap_or(true)
     {
         std::panic::set_hook(Box::new(|info| {
-            log::error!("Panic occurred: {:?}", info);
+            let payload = info.payload();
+            let message = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("<non-string panic payload>");
+            let location = info
+                .location()
+                .map(|location| {
+                    format!(
+                        "{}:{}:{}",
+                        location.file(),
+                        location.line(),
+                        location.column()
+                    )
+                })
+                .unwrap_or_else(|| "<unknown location>".to_string());
+            log::error!("Panic occurred at {}: {}", location, message);
             std::process::exit(1);
         }));
     }
@@ -78,6 +110,8 @@ async fn http_server() {
             "daily_commit_task_heartbeat": daily_commit_task_heartbeat,
             "hourly_fresh_task_heartbeat": hourly_fresh_task_heartbeat,
             "channel_monitor_heartbeat": channel_monitor_heartbeat,
+            "open_fds": open_fds(),
+            "max_fds": max_fds(),
         }))
         .unwrap())
     }
@@ -115,6 +149,7 @@ async fn http_server() {
     let listener = TcpListener::new(format!("0.0.0.0:{}", http_port))
         .bind()
         .await;
+    log::info!("Open file limit: {:?}", max_fds());
     log::info!("Starting HTTP server on port {}", http_port);
     Server::new(listener).serve(service).await;
 }
