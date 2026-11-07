@@ -265,6 +265,7 @@ async fn timed_commit_states_inner(
         let mut raw_nodes = Vec::new();
         let mut after_cursor = None;
         let mut attempts = 0;
+        let mut nodes_complete = true;
 
         loop {
             match rpc
@@ -303,6 +304,7 @@ async fn timed_commit_states_inner(
                             net,
                             attempts
                         );
+                        nodes_complete = false;
                         break;
                     }
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -310,9 +312,15 @@ async fn timed_commit_states_inner(
             }
         }
 
+        if !nodes_complete {
+            log::error!("Discarding incomplete {:?} node graph", net);
+            raw_nodes.clear();
+        }
+
         let mut raw_channels = Vec::new();
         let mut after_cursor = None;
         let mut attempts = 0;
+        let mut channels_complete = true;
 
         loop {
             match rpc
@@ -351,11 +359,17 @@ async fn timed_commit_states_inner(
                             net,
                             attempts
                         );
+                        channels_complete = false;
                         break;
                     }
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
             }
+        }
+
+        if !channels_complete {
+            log::error!("Discarding incomplete {:?} channel graph", net);
+            raw_channels.clear();
         }
 
         if raw_nodes.is_empty() && raw_channels.is_empty() {
