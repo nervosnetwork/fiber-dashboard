@@ -313,8 +313,11 @@ async fn timed_commit_states_inner(
         }
 
         if !nodes_complete {
-            log::error!("Discarding incomplete {:?} node graph", net);
-            raw_nodes.clear();
+            log::error!(
+                "Skipping {:?} sync: node graph fetch failed, UDTs cannot be resolved",
+                net
+            );
+            continue;
         }
 
         let mut raw_channels = Vec::new();
