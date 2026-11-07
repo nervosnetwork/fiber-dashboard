@@ -1345,7 +1345,7 @@ impl ChannelStateUpdate {
             "insert into {} (channel_outpoint, tx_hash, block_number, timestamp, witness_args, commitment_args) ",
             net.channel_txs()
         );
-        let combin = updates
+        let mut combin = updates
             .iter()
             .flat_map(|cu| std::iter::repeat(cu.outpoint.clone()).zip(cu.txs.iter()))
             .map(
@@ -1359,13 +1359,16 @@ impl ChannelStateUpdate {
                         commitment_args,
                     )
                 },
-            )
-            .collect::<Vec<_>>();
-        for chunk in combin.chunks(PGBIND_LIMIT / 6) {
+            );
+        loop {
+            let chunk: Vec<_> = combin.by_ref().take(PGBIND_LIMIT / 6).collect();
+            if chunk.is_empty() {
+                break;
+            }
             let mut query_builder: sqlx::QueryBuilder<'_, sqlx::Postgres> =
                 sqlx::QueryBuilder::new(&sql);
             query_builder.push_values(
-                chunk,
+                &chunk,
                 |mut b, (outpoint, tx_hash, block_number, timestamp, witness_args, commitment_args)| {
                     b.push_bind(hex_string(outpoint.as_bytes()))
                         .push_bind(hex_string(tx_hash.as_bytes()))
