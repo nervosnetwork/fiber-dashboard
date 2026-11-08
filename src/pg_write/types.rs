@@ -26,6 +26,9 @@ pub const CHANNEL_INFO_INSERT_SQL: &str = "insert into {} (
     update_of_node2_tlc_minimum_value, update_of_node2_fee_rate
 ) ";
 
+/// Postgres accepts at most 65535 bind parameters per statement.
+pub(crate) const PGBIND_LIMIT: usize = 65535;
+
 #[derive(sqlx::FromRow)]
 pub struct UdtInfoCache {
     pub id: i32,
@@ -59,18 +62,20 @@ impl UdtInfos {
             return Ok(());
         }
         let sql = UDT_INFO_INSERT_SQL.replace("{}", net.udt_infos());
-        let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(sql);
+        for chunk in udts.chunks(PGBIND_LIMIT / 6) {
+            let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(&sql);
 
-        query_builder.push_values(udts.iter().take(65535 / 6), |mut b, udt| {
-            b.push_bind(udt.id)
-                .push_bind(&udt.name)
-                .push_bind(&udt.code_hash)
-                .push_bind(&udt.hash_type)
-                .push_bind(&udt.args)
-                .push_bind(&udt.auto_accept_amount);
-        });
+            query_builder.push_values(chunk, |mut b, udt| {
+                b.push_bind(udt.id)
+                    .push_bind(&udt.name)
+                    .push_bind(&udt.code_hash)
+                    .push_bind(&udt.hash_type)
+                    .push_bind(&udt.args)
+                    .push_bind(&udt.auto_accept_amount);
+            });
 
-        query_builder.build().execute(conn).await?;
+            query_builder.build().execute(&mut *conn).await?;
+        }
         Ok(())
     }
 }
@@ -95,19 +100,21 @@ impl UdtdepRelation {
             return Ok(());
         }
         let sql = UDT_DEP_RELATION_INSERT_SQL.replace("{}", net.udt_dep());
-        let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(sql);
+        for chunk in relations.chunks(PGBIND_LIMIT / 7) {
+            let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(&sql);
 
-        query_builder.push_values(relations.iter().take(65535 / 7), |mut b, relation| {
-            b.push_bind(&relation.outpoint_tx_hash)
-                .push_bind(&relation.outpoint_index)
-                .push_bind(&relation.dep_type)
-                .push_bind(&relation.code_hash)
-                .push_bind(&relation.hash_type)
-                .push_bind(&relation.args)
-                .push_bind(relation.udt_info_id);
-        });
+            query_builder.push_values(chunk, |mut b, relation| {
+                b.push_bind(&relation.outpoint_tx_hash)
+                    .push_bind(&relation.outpoint_index)
+                    .push_bind(&relation.dep_type)
+                    .push_bind(&relation.code_hash)
+                    .push_bind(&relation.hash_type)
+                    .push_bind(&relation.args)
+                    .push_bind(relation.udt_info_id);
+            });
 
-        query_builder.build().execute(conn).await?;
+            query_builder.build().execute(&mut *conn).await?;
+        }
         Ok(())
     }
 }
@@ -127,14 +134,16 @@ impl UdtNodeRelation {
             return Ok(());
         }
         let sql = UDT_NODE_RELATION_INSERT_SQL.replace("{}", net.node_udt_relations());
-        let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(sql);
+        for chunk in relations.chunks(PGBIND_LIMIT / 2) {
+            let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(&sql);
 
-        query_builder.push_values(relations.iter().take(65535 / 2), |mut b, relation| {
-            b.push_bind(&relation.node_id)
-                .push_bind(relation.udt_info_id);
-        });
+            query_builder.push_values(chunk, |mut b, relation| {
+                b.push_bind(&relation.node_id)
+                    .push_bind(relation.udt_info_id);
+            });
 
-        query_builder.build().execute(conn).await?;
+            query_builder.build().execute(&mut *conn).await?;
+        }
         Ok(())
     }
 }
@@ -166,23 +175,25 @@ impl NodeInfoDBSchema {
             return Ok(());
         }
         let sql = NODE_INFO_INSERT_SQL.replace("{}", net.node_infos());
-        let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(sql);
+        for chunk in nodes.chunks(PGBIND_LIMIT / 11) {
+            let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(&sql);
 
-        query_builder.push_values(nodes.iter().take(65535 / 12), |mut b, node| {
-            b.push_bind(time)
-                .push_bind(&node.node_name)
-                .push_bind(&node.addresses)
-                .push_bind(&node.node_id)
-                .push_bind(node.announce_timestamp)
-                .push_bind(&node.chain_hash)
-                .push_bind(&node.auto_accept_min_ckb_funding_amount)
-                .push_bind(&node.country_or_region)
-                .push_bind(&node.city)
-                .push_bind(&node.region)
-                .push_bind(&node.loc);
-        });
+            query_builder.push_values(chunk, |mut b, node| {
+                b.push_bind(time)
+                    .push_bind(&node.node_name)
+                    .push_bind(&node.addresses)
+                    .push_bind(&node.node_id)
+                    .push_bind(node.announce_timestamp)
+                    .push_bind(&node.chain_hash)
+                    .push_bind(&node.auto_accept_min_ckb_funding_amount)
+                    .push_bind(&node.country_or_region)
+                    .push_bind(&node.city)
+                    .push_bind(&node.region)
+                    .push_bind(&node.loc);
+            });
 
-        query_builder.build().execute(conn).await?;
+            query_builder.build().execute(&mut *conn).await?;
+        }
         Ok(())
     }
 }
@@ -241,32 +252,34 @@ impl ChannelInfoDBSchema {
             return Ok(());
         }
         let sql = CHANNEL_INFO_INSERT_SQL.replace("{}", net.channel_infos());
-        let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(sql);
+        for chunk in channels.chunks(PGBIND_LIMIT / 20) {
+            let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(&sql);
 
-        query_builder.push_values(channels.iter().take(65535 / 20), |mut b, channel| {
-            b.push_bind(time)
-                .push_bind(&channel.channel_outpoint)
-                .push_bind(&channel.node1)
-                .push_bind(&channel.node2)
-                .push_bind(&channel.capacity)
-                .push_bind(&channel.chain_hash)
-                .push_bind(channel.udt_type_script.as_ref())
-                .push_bind(channel.created_timestamp)
-                .push_bind(channel.update_of_node1_timestamp)
-                .push_bind(channel.update_of_node1_enabled)
-                .push_bind(&channel.update_of_node1_outbound_liquidity)
-                .push_bind(&channel.update_of_node1_tlc_expiry_delta)
-                .push_bind(&channel.update_of_node1_tlc_minimum_value)
-                .push_bind(&channel.update_of_node1_fee_rate)
-                .push_bind(channel.update_of_node2_timestamp)
-                .push_bind(channel.update_of_node2_enabled)
-                .push_bind(&channel.update_of_node2_outbound_liquidity)
-                .push_bind(&channel.update_of_node2_tlc_expiry_delta)
-                .push_bind(&channel.update_of_node2_tlc_minimum_value)
-                .push_bind(&channel.update_of_node2_fee_rate);
-        });
+            query_builder.push_values(chunk, |mut b, channel| {
+                b.push_bind(time)
+                    .push_bind(&channel.channel_outpoint)
+                    .push_bind(&channel.node1)
+                    .push_bind(&channel.node2)
+                    .push_bind(&channel.capacity)
+                    .push_bind(&channel.chain_hash)
+                    .push_bind(channel.udt_type_script.as_ref())
+                    .push_bind(channel.created_timestamp)
+                    .push_bind(channel.update_of_node1_timestamp)
+                    .push_bind(channel.update_of_node1_enabled)
+                    .push_bind(&channel.update_of_node1_outbound_liquidity)
+                    .push_bind(&channel.update_of_node1_tlc_expiry_delta)
+                    .push_bind(&channel.update_of_node1_tlc_minimum_value)
+                    .push_bind(&channel.update_of_node1_fee_rate)
+                    .push_bind(channel.update_of_node2_timestamp)
+                    .push_bind(channel.update_of_node2_enabled)
+                    .push_bind(&channel.update_of_node2_outbound_liquidity)
+                    .push_bind(&channel.update_of_node2_tlc_expiry_delta)
+                    .push_bind(&channel.update_of_node2_tlc_minimum_value)
+                    .push_bind(&channel.update_of_node2_fee_rate);
+            });
 
-        query_builder.build().execute(conn).await?;
+            query_builder.build().execute(&mut *conn).await?;
+        }
         Ok(())
     }
 }
